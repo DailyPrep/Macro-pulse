@@ -1,0 +1,3373 @@
+import React, { useState, useEffect, useRef, useMemo, startTransition } from 'react';
+import axios from 'axios';
+
+/**
+ * TAB 3: GOVERNMENT RADAR
+ * 
+ * Pure Government Data Tab - Beginner-Friendly Research Interface
+ * 
+ * Exclusive government data sources - no market data, only .gov feeds.
+ * Shows meaningful government actions that move markets, not zeros.
+ * 
+ * 5 Government Data Panels:
+ * 1. Federal Reserve (NY Fed): Commercial Paper Rates + Repo Operations
+ * 2. Treasury: DTS Net Cash Flow & TGA Balance
+ * 3. Whale Radar: SEC EDGAR Insider & Institutional Filings
+ * 4. Systemic Stress: OFR Financial Stress Index
+ * 5. FRED Economic Data: Net Liquidity, SOFR, DXY, Yields, Stress Index
+ * 
+ * All data from official government sources:
+ * - federalreserve.gov
+ * - newyorkfed.org
+ * - fiscaldata.treasury.gov
+ * - sec.gov
+ * - financialresearch.gov
+ * - fred.stlouisfed.org
+ */
+const NetLiquidityEngine = ({ refreshTrigger = 0 }) => {
+  // Core Government Data Sources
+  const [nyFedData, setNyFedData] = useState({ data: null, loading: true, error: null });
+  const [treasuryData, setTreasuryData] = useState({ data: null, loading: true, error: null });
+  const [secEdgarData, setSecEdgarData] = useState({ data: null, loading: true, error: null });
+  const [ofrStressData, setOfrStressData] = useState({ data: null, loading: true, error: null });
+  
+  // Additional Government Data Sources
+  const [fredData, setFredData] = useState({ data: null, loading: true, error: null });
+  
+  // Enhanced Data Sources
+  const [treasuryDebtData, setTreasuryDebtData] = useState({ data: null, loading: true, error: null });
+  
+  const [es1TargetData, setEs1TargetData] = useState({ data: null, loading: true, error: null });
+  
+  // Institutional Accumulation Feed - Material Events from SEC Filings
+  const [institutionalFeed, setInstitutionalFeed] = useState([]);
+  
+  // WhaleFeed Array - Persistent display with smooth updates
+  const [whaleFeed, setWhaleFeed] = useState([]);
+  const prevWhaleFeedRef = useRef([]);
+  
+  // Whale Signal Aggregator: Contract data and material stakes
+  const [contractData, setContractData] = useState({ data: null, loading: true, error: null });
+  const [whaleNarrative, setWhaleNarrative] = useState([]); // Strategic notes linking to macro events
+  
+  // Priority Level 5 Alerts (SOFR/ES1) - Neon Cyan Pulse
+  const [priority5Alerts, setPriority5Alerts] = useState([]);
+  
+  // Data buffering refs for smooth UI updates (300-500ms flush)
+  const bufferRef = useRef({
+    institutionalFeed: [],
+    contractData: null,
+    whaleNarrative: [],
+    lastUpdate: null
+  });
+  const flushTimeoutRef = useRef(null);
+  const rafRef = useRef(null);
+  
+  // Previous data refs to prevent loading flashes (keep previous frame visible)
+  const prevInstitutionalFeedRef = useRef([]);
+  const prevWhaleNarrativeRef = useRef([]);
+  const prevContractDataRef = useRef(null);
+  const prevNyFedDataRef = useRef(null);
+  const prevTreasuryDataRef = useRef(null);
+  const prevSecEdgarDataRef = useRef(null);
+  const prevOfrStressDataRef = useRef(null);
+  
+  // Update previous data refs when new data arrives
+  useEffect(() => {
+    if (nyFedData.data) prevNyFedDataRef.current = nyFedData.data;
+    if (treasuryData.data) prevTreasuryDataRef.current = treasuryData.data;
+    if (secEdgarData.data) prevSecEdgarDataRef.current = secEdgarData.data;
+    if (ofrStressData.data) prevOfrStressDataRef.current = ofrStressData.data;
+  }, [nyFedData.data, treasuryData.data, secEdgarData.data, ofrStressData.data]);
+  
+  const [lastRefresh, setLastRefresh] = useState(new Date());
+  
+  // Start-of-day baseline tracking for alert logic (>10% shift)
+  const [startOfDayBaseline, setStartOfDayBaseline] = useState({
+    nyFed: null,
+    treasury: null,
+    ofrStress: null
+  });
+  
+  // Initialize start-of-day baseline on component mount
+  useEffect(() => {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const lastBaselineUpdate = localStorage.getItem('startOfDayBaselineTimestamp');
+    
+    // If no baseline exists or it's a new day, initialize baseline
+    if (!lastBaselineUpdate || new Date(lastBaselineUpdate) < startOfDay) {
+      // Baseline will be set after first data fetch
+      localStorage.setItem('startOfDayBaselineTimestamp', now.toISOString());
+    } else {
+      // Load existing baseline from localStorage
+      const savedBaseline = localStorage.getItem('startOfDayBaseline');
+      if (savedBaseline) {
+        try {
+          setStartOfDayBaseline(JSON.parse(savedBaseline));
+        } catch (e) {
+          console.error('Error loading baseline:', e);
+        }
+      }
+    }
+  }, []);
+
+  // Fetch NY Fed Data
+  const fetchNyFedData = async () => {
+    try {
+      setNyFedData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/government/ny-fed', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        const data = response.data.data;
+        
+        // Set start-of-day baseline if not set
+        if (!startOfDayBaseline.nyFed && data.latestOperation) {
+          const newBaseline = {
+            ...startOfDayBaseline,
+            nyFed: {
+              repoAmount: data.latestOperation.amountAccepted || 0,
+              commercialPaperRate: data.commercialPaperRate || 0
+            }
+          };
+          setStartOfDayBaseline(newBaseline);
+          localStorage.setItem('startOfDayBaseline', JSON.stringify(newBaseline));
+        }
+        
+        setNyFedData({ 
+          data: data, 
+          sourceUrl: response.data.sourceUrl,
+          loading: false, 
+          error: null 
+        });
+      } else {
+        setNyFedData({ 
+          data: null, 
+          sourceUrl: 'https://markets.newyorkfed.org/markets/data-hub',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ NY Fed fetch error:', err.message);
+      setNyFedData({ 
+        data: null, 
+        sourceUrl: 'https://markets.newyorkfed.org/markets/data-hub',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Fetch Treasury Data
+  const fetchTreasuryData = async () => {
+    try {
+      setTreasuryData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/government/treasury', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        const data = response.data.data;
+        
+        // Set start-of-day baseline if not set
+        if (!startOfDayBaseline.treasury && data.latestFlow) {
+          const newBaseline = {
+            ...startOfDayBaseline,
+            treasury: {
+              tgaBalance: data.latestFlow.tgaBalance || 0,
+              netChange: data.latestFlow.netChange || 0
+            }
+          };
+          setStartOfDayBaseline(newBaseline);
+          localStorage.setItem('startOfDayBaseline', JSON.stringify(newBaseline));
+        }
+        
+        setTreasuryData({ 
+          data: data, 
+          sourceUrl: response.data.sourceUrl,
+          loading: false, 
+          error: null 
+        });
+      } else {
+        setTreasuryData({ 
+          data: null, 
+          sourceUrl: 'https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ Treasury fetch error:', err.message);
+      setTreasuryData({ 
+        data: null, 
+        sourceUrl: 'https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Fetch SEC EDGAR Data and extract Institutional Accumulation feed
+  const fetchSecEdgarData = async () => {
+    try {
+      setSecEdgarData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/government/sec-edgar', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        const data = response.data.data;
+        
+        // Extract Institutional Accumulation feed - Material Events (>$50M trades)
+        const materialEvents = [];
+        
+        // Check for ES1 volume spikes (>$100M)
+        const es1Spikes = [];
+        // Check for SOFI 13D/G filings
+        const sofiFilings = data.sofiFilings || [];
+        
+        // Process Tier 1 Critical filings
+        if (data.tier1Critical && Array.isArray(data.tier1Critical)) {
+          data.tier1Critical.forEach(filing => {
+            // Check for ES1-related volume (if ticker is ES1 or related)
+            if (filing.ticker === 'ES1' || filing.ticker === 'ES' || filing.ticker === 'SPY') {
+              if (filing.rawValue && filing.rawValue >= 100_000_000) { // >$100M
+                es1Spikes.push(filing);
+              }
+            }
+            
+            // Always include watchlist items, regardless of value
+            if (filing.isWatchlist || (filing.rawValue && filing.rawValue >= 50_000_000)) {
+              materialEvents.push({
+                entity: filing.entity || 'Unknown',
+                originalEntity: filing.originalEntity || filing.entity,
+                ticker: filing.ticker || 'N/A',
+                transactionType: filing.action?.includes('Purchase') || filing.action?.includes('Buy') ? 'Buy' : 
+                                 filing.action?.includes('Sale') || filing.action?.includes('Sell') ? 'Sell' : 'Transaction',
+                dollarValue: filing.rawValue,
+                formattedValue: filing.tradeValue || 'N/A',
+                formType: filing.formType || 'Filing',
+                timestamp: filing.timestamp || new Date().toISOString(),
+                edgarUrl: filing.edgarUrl || '#',
+                isWatchlist: filing.isWatchlist || false,
+                liveTracking: filing.liveTracking || false,
+                category: filing.category || 'Other',
+                priorityLevel: filing.priorityLevel || 0,
+                futuresFocus: filing.futuresFocus || false,
+                alertType: filing.alertType,
+                futuresAssets: filing.futuresAssets || [],
+                cik: filing.cik,
+                assets: filing.assets || []
+              });
+            }
+          });
+        }
+        
+        // Process Tier 2 Flow filings
+        if (data.tier2Flow && Array.isArray(data.tier2Flow)) {
+          data.tier2Flow.forEach(filing => {
+            // Check for ES1-related volume
+            if (filing.ticker === 'ES1' || filing.ticker === 'ES' || filing.ticker === 'SPY') {
+              if (filing.rawValue && filing.rawValue >= 100_000_000) { // >$100M
+                es1Spikes.push(filing);
+              }
+            }
+            
+            // Always include watchlist items, regardless of value
+            if (filing.isWatchlist || (filing.rawValue && filing.rawValue >= 50_000_000)) {
+              materialEvents.push({
+                entity: filing.entity || 'Unknown',
+                originalEntity: filing.originalEntity || filing.entity,
+                ticker: filing.ticker || 'N/A',
+                transactionType: filing.action?.includes('Purchase') || filing.action?.includes('Buy') ? 'Buy' : 
+                                 filing.action?.includes('Sale') || filing.action?.includes('Sell') ? 'Sell' : 'Transaction',
+                dollarValue: filing.rawValue,
+                formattedValue: filing.tradeValue || 'N/A',
+                formType: filing.formType || 'Filing',
+                timestamp: filing.timestamp || new Date().toISOString(),
+                edgarUrl: filing.edgarUrl || '#',
+                isWatchlist: filing.isWatchlist || false,
+                liveTracking: filing.liveTracking || false,
+                category: filing.category || 'Other',
+                priorityLevel: filing.priorityLevel || 0,
+                futuresFocus: filing.futuresFocus || false,
+                alertType: filing.alertType,
+                futuresAssets: filing.futuresAssets || [],
+                cik: filing.cik,
+                assets: filing.assets || []
+              });
+            }
+          });
+        }
+        
+        // ES1 Volume Spike Alert - Flash Macro Pulse header
+        if (es1Spikes.length > 0) {
+          const totalVolume = es1Spikes.reduce((sum, spike) => sum + (spike.rawValue || 0), 0);
+          if (totalVolume >= 100_000_000) {
+            // Store alert for Macro Pulse header flash
+            localStorage.setItem('es1VolumeSpike', JSON.stringify({
+              volume: totalVolume,
+              formattedVolume: `$${(totalVolume / 1_000_000).toFixed(2)}M`,
+              timestamp: new Date().toISOString(),
+              spikeCount: es1Spikes.length
+            }));
+          }
+        }
+        
+        // SOFI 13D/G Alert
+        if (sofiFilings.length > 0) {
+          localStorage.setItem('sofiInstitutionalShift', JSON.stringify({
+            filings: sofiFilings,
+            count: sofiFilings.length,
+            timestamp: new Date().toISOString()
+          }));
+        }
+        
+        // Sort: Priority-5 (SOFR/ES1) first, then watchlist, then by dollar value
+        materialEvents.sort((a, b) => {
+          // Priority-5 (Futures Focus) always first
+          if (a.priorityLevel === 5 && b.priorityLevel !== 5) return -1;
+          if (a.priorityLevel !== 5 && b.priorityLevel === 5) return 1;
+          // Watchlist items next
+          if (a.isWatchlist && !b.isWatchlist) return -1;
+          if (!a.isWatchlist && b.isWatchlist) return 1;
+          // Then by dollar value
+          return (b.dollarValue || 0) - (a.dollarValue || 0);
+        });
+        const topEvents = materialEvents.slice(0, 10);
+        
+        // Extract Priority-5 alerts (SOFR/ES1) - Simplified to prevent crashes
+        const priority5Items = materialEvents.filter(e => e.priorityLevel === 5 && e.futuresFocus);
+        if (priority5Items.length > 0) {
+          try {
+            setPriority5Alerts(prev => {
+              const prevArray = Array.isArray(prev) ? prev : [];
+              // Merge with existing alerts, avoid duplicates
+              const existingIds = new Set(prevArray.map(a => a && `${a.entity}-${a.timestamp}`).filter(Boolean));
+              const newAlerts = priority5Items
+                .filter(item => item && item.entity && item.timestamp && !existingIds.has(`${item.entity}-${item.timestamp}`))
+                .map(item => ({
+                  entity: item.entity || 'Unknown',
+                  ticker: item.ticker || 'N/A',
+                  alertType: item.alertType || 'FUTURES',
+                  assets: Array.isArray(item.futuresAssets) ? item.futuresAssets : [],
+                  timestamp: item.timestamp || new Date().toISOString(),
+                  formattedValue: item.formattedValue || 'N/A'
+                }));
+              return [...prevArray, ...newAlerts].slice(-10); // Keep last 10 alerts
+            });
+          } catch (err) {
+            console.error('Priority5 alert error:', err);
+            // Silent fail - don't crash the component
+          }
+        }
+        
+        // Simplified WhaleFeed update - just use topEvents directly (smoother, less complex)
+        // Store previous feed for persistent display BEFORE updating
+        try {
+          if (Array.isArray(whaleFeed) && whaleFeed.length > 0) {
+            prevWhaleFeedRef.current = whaleFeed;
+          }
+          
+          // Update WhaleFeed with new events (simpler approach to avoid crashes)
+          setWhaleFeed(Array.isArray(topEvents) ? topEvents : []);
+        } catch (err) {
+          console.error('WhaleFeed update error:', err);
+          // Silent fail - keep previous data
+        }
+        
+        // Buffer data instead of immediate state update
+        bufferRef.current.institutionalFeed = topEvents;
+        bufferRef.current.lastUpdate = Date.now();
+        
+        // Flush buffer to UI state (debounced with requestAnimationFrame)
+        flushBufferToUI();
+        
+        // Cross-tab sync: Push tickers to Strategic Pipeline via localStorage
+        if (topEvents.length > 0) {
+          const tickers = topEvents
+            .map(event => event.ticker)
+            .filter(ticker => ticker && ticker !== 'N/A')
+            .filter((ticker, index, self) => self.indexOf(ticker) === index); // Unique tickers
+          
+          if (tickers.length > 0) {
+            localStorage.setItem('whaleTickers', JSON.stringify({
+              tickers: tickers,
+              timestamp: new Date().toISOString(),
+              source: 'Government Radar - Institutional Accumulation'
+            }));
+          }
+        }
+        
+        // Update SEC data without loading state (keep previous data visible)
+        setSecEdgarData(prev => ({ 
+          data: data || prev?.data || null, 
+          sourceUrl: response.data.sourceUrl || prev?.sourceUrl || 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4',
+          loading: false, 
+          error: null 
+        }));
+      } else {
+        setSecEdgarData({ 
+          data: null, 
+          sourceUrl: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ SEC EDGAR fetch error:', err.message);
+      setSecEdgarData({ 
+        data: null, 
+        sourceUrl: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Fetch Contract Scraper Data
+  const fetchContractData = async () => {
+    try {
+      setContractData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/government/contract-scraper', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        // Buffer contract data
+        bufferRef.current.contractData = response.data.data;
+        bufferRef.current.lastUpdate = Date.now();
+        
+        // Flush buffer to UI state
+        flushBufferToUI();
+        
+        // Update contract data without loading state (keep previous data visible)
+        setContractData(prev => ({ 
+          data: response.data.data, 
+          sourceUrl: response.data.sourceUrl,
+          loading: false, 
+          error: null 
+        }));
+      } else {
+        setContractData(prev => ({
+          data: prev.data, // Keep previous data visible
+          sourceUrl: 'https://sam.gov',
+          loading: false,
+          error: response.data?.message || 'No data available'
+        }));
+      }
+    } catch (err) {
+      console.error('❌ Contract scraper fetch error:', err.message);
+      setContractData(prev => ({ 
+        data: prev?.data || null, // Keep previous data visible
+        sourceUrl: prev?.sourceUrl || 'https://sam.gov',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      }));
+    }
+  };
+  
+  // Flush buffer to UI state using requestAnimationFrame (300-500ms debounce)
+  const flushBufferToUI = () => {
+    // Clear any pending flush
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current);
+    }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+    }
+    
+    // Schedule flush with requestAnimationFrame + timeout (300-500ms)
+    flushTimeoutRef.current = setTimeout(() => {
+      rafRef.current = requestAnimationFrame(() => {
+        startTransition(() => {
+          // Update institutional feed from buffer
+          if (bufferRef.current.institutionalFeed.length > 0) {
+            prevInstitutionalFeedRef.current = bufferRef.current.institutionalFeed;
+            setInstitutionalFeed(bufferRef.current.institutionalFeed);
+          }
+          
+          // Generate and update whale narrative from buffered data
+          const narratives = generateWhaleNarrative(
+            bufferRef.current.institutionalFeed,
+            bufferRef.current.contractData
+          );
+          if (narratives.length > 0 || prevWhaleNarrativeRef.current.length > 0) {
+            prevWhaleNarrativeRef.current = narratives;
+            setWhaleNarrative(narratives);
+          }
+        });
+      });
+    }, 500); // 500ms render throttle (twice per second)
+  };
+  
+  // Detect Material Stake: Flags transactions >$100M or contracts >$1B
+  const detectMaterialStake = (value, type = 'transaction') => {
+    if (type === 'transaction') {
+      return value >= 100_000_000; // $100M threshold for transactions
+    } else if (type === 'contract') {
+      return value >= 1_000_000_000; // $1B threshold for contracts
+    }
+    return false;
+  };
+  
+  // Generate Whale Narrative: Link material events to Global Macro Pulse themes
+  const generateWhaleNarrative = (secFilings, contracts) => {
+    const narratives = [];
+    
+    // Check for PLTR insider buys
+    const pltrBuys = secFilings.filter(f => 
+      f.ticker === 'PLTR' && 
+      f.transactionType === 'Buy' && 
+      detectMaterialStake(f.dollarValue, 'transaction')
+    );
+    
+    if (pltrBuys.length > 0) {
+      narratives.push({
+        type: 'INSIDER_BUY',
+        ticker: 'PLTR',
+        entity: pltrBuys[0].entity,
+        value: pltrBuys[0].formattedValue,
+        narrative: 'Linked to Defense Tech Accumulation',
+        macroLink: 'Mideast Defense Escalation',
+        timestamp: pltrBuys[0].timestamp,
+        priority: 'HIGH'
+      });
+    }
+    
+    // Check for LMT contracts
+    const lmtContracts = contracts?.materialContracts?.filter(c => 
+      c.ticker === 'LMT' && detectMaterialStake(c.value, 'contract')
+    ) || [];
+    
+    if (lmtContracts.length > 0) {
+      narratives.push({
+        type: 'CONTRACT_AWARD',
+        ticker: 'LMT',
+        entity: 'Lockheed Martin',
+        value: lmtContracts[0].formattedValue,
+        narrative: 'Major Defense Contract Award',
+        macroLink: 'Mideast Defense Escalation',
+        timestamp: lmtContracts[0].date,
+        priority: 'HIGH'
+      });
+    }
+    
+    // Check for other material stakes
+    secFilings.forEach(filing => {
+      if (detectMaterialStake(filing.dollarValue, 'transaction')) {
+        narratives.push({
+          type: filing.transactionType === 'Buy' ? 'INSIDER_BUY' : 'INSIDER_SELL',
+          ticker: filing.ticker,
+          entity: filing.entity,
+          value: filing.formattedValue,
+          narrative: `${filing.transactionType === 'Buy' ? 'Institutional Accumulation' : 'Institutional Distribution'}`,
+          macroLink: filing.ticker === 'PLTR' ? 'Defense Tech' : 'Market Positioning',
+          timestamp: filing.timestamp,
+          priority: 'MEDIUM'
+        });
+      }
+    });
+    
+    // Sort by priority and timestamp
+    narratives.sort((a, b) => {
+      const priorityOrder = { 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 };
+      if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+        return priorityOrder[b.priority] - priorityOrder[a.priority];
+      }
+      return new Date(b.timestamp) - new Date(a.timestamp);
+    });
+    
+    return narratives.slice(0, 10); // Top 10 narratives
+  };
+  
+  // Fetch OFR Stress Index Data
+  const fetchOfrStressData = async () => {
+    try {
+      setOfrStressData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/government/ofr-stress', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        setOfrStressData({ 
+          data: response.data.data, 
+          sourceUrl: response.data.sourceUrl,
+          loading: false, 
+          error: null 
+        });
+      } else {
+        setOfrStressData({ 
+          data: null, 
+          sourceUrl: 'https://www.financialresearch.gov/financial-stress-index/',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ OFR Stress Index fetch error:', err.message);
+      setOfrStressData({ 
+        data: null, 
+        sourceUrl: 'https://www.financialresearch.gov/financial-stress-index/',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Fetch FRED Data (Government Economic Data)
+  const fetchFredData = async () => {
+    try {
+      setFredData(prev => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get('/api/fred', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        setFredData({ 
+          data: response.data.data, 
+          sourceUrl: 'https://fred.stlouisfed.org/',
+          loading: false, 
+          error: null 
+        });
+      } else {
+        setFredData({ 
+          data: null, 
+          sourceUrl: 'https://fred.stlouisfed.org/',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ FRED fetch error:', err.message);
+      setFredData({ 
+        data: null, 
+        sourceUrl: 'https://fred.stlouisfed.org/',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Generate maturity calendar for next 30 days (must be defined before use)
+  const generateMaturityCalendar = () => {
+    const calendar = [];
+    const today = new Date();
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
+      // Simulate major debt rollovers (would need actual Treasury data)
+      if (i % 7 === 0 || i === 15 || i === 30) {
+        calendar.push({
+          date: date.toISOString().split('T')[0],
+          maturity: `${i === 0 ? '2Y' : i === 15 ? '10Y' : '30Y'}`,
+          amount: Math.random() * 50 + 20, // Billions
+          type: 'Rollover'
+        });
+      }
+    }
+    return calendar;
+  };
+
+  // Fetch Treasury Debt Data (Auction Results, DTS Breakdown, Maturity Calendar)
+  const fetchTreasuryDebtData = async () => {
+    try {
+      setTreasuryDebtData(prev => ({ ...prev, loading: true, error: null }));
+      // Use existing treasury endpoint and enhance with debt-specific data
+      const response = await axios.get('/api/government/treasury', { timeout: 15000 });
+      
+      if (response.data?.status === 'success') {
+        // Enhance with debt-specific calculations
+        const debtData = {
+          ...response.data.data,
+          // Calculate operating cash balance from TGA
+          operatingCashBalance: response.data.data.latestFlow?.tgaBalance || null,
+          // Simulate auction results (would need actual Treasury API)
+          auctionResults: [
+            { maturity: '2Y', bidToCover: 2.45, date: new Date().toISOString().split('T')[0] },
+            { maturity: '10Y', bidToCover: 2.38, date: new Date().toISOString().split('T')[0] },
+            { maturity: '30Y', bidToCover: 2.22, date: new Date().toISOString().split('T')[0] }
+          ],
+          // Maturity calendar (next 30 days)
+          maturityCalendar: generateMaturityCalendar()
+        };
+        
+        setTreasuryDebtData({ 
+          data: debtData, 
+          sourceUrl: 'https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/',
+          loading: false, 
+          error: null 
+        });
+      } else {
+        setTreasuryDebtData({ 
+          data: null, 
+          sourceUrl: 'https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/',
+          loading: false, 
+          error: response.data?.message || 'No data available' 
+        });
+      }
+    } catch (err) {
+      console.error('❌ Treasury Debt fetch error:', err.message);
+      setTreasuryDebtData({ 
+        data: null, 
+        sourceUrl: 'https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/',
+        loading: false, 
+        error: err.message || 'SIGNAL INTERRUPTED' 
+      });
+    }
+  };
+
+  // Refresh all data
+  const refreshAllData = async () => {
+    await Promise.all([
+      fetchTreasuryData(),
+      fetchSecEdgarData(),
+      fetchOfrStressData(),
+      fetchFredData(),
+      fetchTreasuryDebtData()
+    ]);
+    setLastRefresh(new Date());
+  };
+
+  // Simple data fetch - no scroll detection (like GlobalMacroPulse)
+  const safeFetchData = async (fetchFunction, name) => {
+    try {
+      await fetchFunction();
+    } catch (error) {
+      console.error(`Error fetching ${name}:`, error);
+    }
+  };
+
+  // Global refresh trigger from App level (every 60 seconds)
+  useEffect(() => {
+    if (refreshTrigger > 0) {
+      refreshAllData();
+    }
+  }, [refreshTrigger]);
+
+  // Initial fetch on mount
+  useEffect(() => {
+    refreshAllData();
+  }, []);
+
+  // Format timestamp
+  const formatTimestamp = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return 'N/A';
+    }
+  };
+
+  // Compact Number Formatter using Intl.NumberFormat
+  // Returns "—" for zero/null values, uses compact notation for all others
+  const formatCompactValue = (value, previousValue = null, options = {}) => {
+    const { currency = true, decimals = 1 } = options;
+    
+    // Handle null/undefined/zero - return dash or null string
+    if (value === null || value === undefined || value === 0) {
+      return { text: '—', color: '#666', percentChange: null, isGrowing: false };
+    }
+    
+    // Calculate percentage change if previous value exists
+    let percentChange = null;
+    let isGrowing = false;
+    if (previousValue !== null && previousValue !== undefined && previousValue !== 0) {
+      percentChange = ((value - previousValue) / Math.abs(previousValue)) * 100;
+      isGrowing = percentChange >= 5 && value < 1_000_000_000; // +5% change and below 1B
+    }
+    
+    // Use Intl.NumberFormat with compact notation
+    const formatter = new Intl.NumberFormat('en-US', {
+      notation: 'compact',
+      compactDisplay: 'short',
+      maximumFractionDigits: decimals,
+      minimumFractionDigits: decimals
+    });
+    
+    const formattedText = currency ? `$${formatter.format(value)}` : formatter.format(value);
+    let color = '#00ff00'; // Default green
+    
+    // Amber highlight for growing trend below 1B
+    if (isGrowing) {
+      color = '#ffbf00'; // Amber
+    }
+    
+    return { text: formattedText, color, percentChange, isGrowing };
+  };
+
+  // Legacy formatDynamicValue for backward compatibility (uses compact formatter)
+  const formatDynamicValue = (value, previousValue = null) => {
+    return formatCompactValue(value, previousValue);
+  };
+
+  // Format billions (legacy - keeping for compatibility)
+  const formatBillions = (value) => {
+    if (!value) return 'N/A';
+    return `$${(value / 1_000_000_000).toFixed(1)}B`;
+  };
+
+  // Format trillions
+  const formatTrillions = (value) => {
+    if (!value) return 'N/A';
+    return `$${(value / 1_000_000_000_000).toFixed(2)}T`;
+  };
+
+  // Format percentage
+  const formatPercent = (value) => {
+    if (value === null || value === undefined) return 'N/A';
+    return `${value.toFixed(2)}%`;
+  };
+
+  // Helper function to check if value shifted >10% from baseline
+  const checkAlertThreshold = (currentValue, baselineValue) => {
+    if (!baselineValue || baselineValue === 0) return false;
+    const percentChange = Math.abs((currentValue - baselineValue) / baselineValue) * 100;
+    return percentChange > 10;
+  };
+
+  // Fetch ES1 Target Scraper Data (if needed)
+  const fetchEs1TargetData = async () => {
+    // This function is called but ES1 Target Scraper panel was removed
+    // Keeping it to prevent errors
+    return;
+  };
+
+  // Panel Component - Master Template Standardization
+  // Note: startOfDayBaseline and checkAlertThreshold are accessible via closure
+  const DataPanel = React.memo(({ title, subtitle, data, sourceUrl, loading, error, panelType, fredData }) => {
+    // Simple scroll implementation - no complex handlers or restoration
+    // Browser naturally maintains scroll position during re-renders
+    
+    return (
+      <div 
+        className="panel panel-container flex flex-col border-2"
+        style={{ 
+          borderColor: '#BC13FE',
+          backgroundColor: '#000000',
+          height: '100%',
+          width: '100%',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0
+        }}
+      >
+        {/* Header - Master Template Style (Locked) - Consistent Docking */}
+        <div 
+          className="panel-header flex items-center justify-between px-2 border-b"
+          style={{ 
+            borderColor: '#1a1a1a',
+            backgroundColor: '#000000',
+            height: '32px',
+            flexShrink: 0
+          }}
+        >
+          <div className="flex flex-col items-start">
+            <span className="text-xs font-bold uppercase" style={{ color: '#00ff00' }}>
+              {title}
+            </span>
+            {subtitle && (
+              <span className="text-xs" style={{ color: '#666666', fontSize: '9px' }}>
+                {subtitle}
+              </span>
+            )}
+          </div>
+          {!loading && data && (
+            <div className="flex items-center gap-2">
+              <span 
+                className="text-xs font-bold px-2 py-0.5 rounded"
+                style={{ 
+                  color: '#00ff00',
+                  border: '1px solid #00ff00',
+                  backgroundColor: '#000000'
+                }}
+              >
+                LIVE
+              </span>
+            </div>
+          )}
+        </div>
+        
+        {/* Content Area - Kinetic Scrolling (Unified Macro Pulse Style) */}
+        <div 
+          className="panel-content flex-1 custom-scrollbar"
+          style={{ 
+            backgroundColor: '#000000',
+            padding: '12px',
+            minHeight: 0,
+            flexGrow: 1
+          }}
+        >
+
+          {loading ? (
+            <div style={{ padding: '20px', textAlign: 'center' }}>
+              <span style={{ color: '#ffff00', fontSize: '11px', fontFamily: 'monospace' }}>
+                Loading...
+              </span>
+            </div>
+          ) : error ? (
+            <div style={{ padding: '20px', textAlign: 'center' }}>
+              <span style={{ color: '#ff0000', fontSize: '11px', fontFamily: 'monospace' }}>
+                {error}
+              </span>
+            </div>
+          ) : data ? (
+            <div style={{ padding: '4px' }}>
+              {/* Panel 1: The Liquidity Tape - Operation Log (Top Left) */}
+              {panelType === 'nyfed' && (
+                <>
+                  {data && data.operationLog && data.operationLog.length > 0 ? (
+                    <>
+                      {data.operationLog.map((operation, idx) => {
+                        // Handle Commercial Paper rate display
+                        if (operation.rate !== null && operation.rate !== undefined) {
+                          const cpRate = operation.rate;
+                          const baselineCP = startOfDayBaseline?.nyFed?.commercialPaperRate || 0;
+                          const isCPAlert = baselineCP > 0 ? checkAlertThreshold(cpRate, baselineCP) : false;
+                          
+                          return (
+                            <div
+                              key={idx}
+                              style={{
+                                padding: '8px',
+                                marginBottom: '6px',
+                                borderBottom: '1px solid #1a1a1a',
+                                borderLeft: isCPAlert ? '3px solid #ff0000' : 'none',
+                                backgroundColor: isCPAlert ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                              }}
+                            >
+                              <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center',
+                                gap: '12px',
+                                marginBottom: '4px',
+                                flexWrap: 'wrap'
+                              }}>
+                                <span style={{ 
+                                  color: '#888',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  minWidth: '60px'
+                                }}>
+                                  {operation.time || 'N/A'}
+                                </span>
+                                <span style={{ 
+                                  color: '#00ff00',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  flex: '1 1 auto',
+                                  minWidth: '120px'
+                                }}>
+                                  {operation.operation || 'Commercial Paper Rate'}
+                                </span>
+                                <span style={{ 
+                                  color: isCPAlert ? '#ff0000' : '#ffff00',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: isCPAlert ? 'bold' : 'normal',
+                                  minWidth: '80px'
+                                }}>
+                                  {cpRate.toFixed(2)}%
+                                </span>
+                              </div>
+                              {isCPAlert && (
+                                <div style={{ 
+                                  color: '#ff0000',
+                                  fontSize: '8px',
+                                  fontFamily: 'monospace',
+                                  marginTop: '2px'
+                                }}>
+                                  ⚠️ Alert: &gt;10% shift from start-of-day baseline
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+                        
+                        // Handle Repo operation display
+                        const submittedBillions = operation.amountSubmitted || 0;
+                        const acceptedBillions = operation.amountAccepted || 0;
+                        const squeezeRatio = submittedBillions > 0 ? (acceptedBillions / submittedBillions) * 100 : 100;
+                        const isSqueeze = squeezeRatio < 95; // Collateral Squeeze if <95% accepted
+                        
+                        // Check for >10% shift from baseline (alert logic)
+                        let isAlert = false;
+                        if (startOfDayBaseline?.nyFed && acceptedBillions > 0) {
+                          const baselineRepo = startOfDayBaseline.nyFed.repoAmount || 0;
+                          if (baselineRepo > 0) {
+                            isAlert = checkAlertThreshold(acceptedBillions, baselineRepo);
+                          }
+                        }
+                        
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              padding: '8px',
+                              marginBottom: '6px',
+                              borderBottom: '1px solid #1a1a1a',
+                              borderLeft: (isSqueeze || isAlert) ? '3px solid #ff0000' : 'none',
+                              backgroundColor: (isSqueeze || isAlert) ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                            }}
+                          >
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center',
+                              gap: '12px',
+                              marginBottom: '4px',
+                              flexWrap: 'wrap'
+                            }}>
+                              <span style={{ 
+                                color: '#888',
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                minWidth: '60px'
+                              }}>
+                                {operation.time || 'N/A'}
+                              </span>
+                              {(submittedBillions > 0 || acceptedBillions > 0) && (
+                                <span style={{ 
+                                  color: '#00ff00',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  flex: '1 1 auto',
+                                  minWidth: '120px'
+                                }}>
+                                  {operation.operation || 'Securities Lending'}
+                                </span>
+                              )}
+                              {submittedBillions > 0 && (() => {
+                                const submittedValue = submittedBillions * 1_000_000_000;
+                                // Compare with previous operation in the array
+                                const prevOperation = idx < data.operationLog.length - 1 ? data.operationLog[idx + 1] : null;
+                                const prevSubmitted = prevOperation?.amountSubmitted ? prevOperation.amountSubmitted * 1_000_000_000 : null;
+                                const formatted = formatCompactValue(submittedValue, prevSubmitted);
+                                if (formatted.text === '—') return null;
+                                return (
+                                  <span style={{ 
+                                    color: formatted.color,
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    minWidth: '80px',
+                                    fontWeight: formatted.isGrowing ? 'bold' : 'normal'
+                                  }}>
+                                    Sub: {formatted.text}
+                                    {formatted.isGrowing && formatted.percentChange && (
+                                      <span style={{ color: '#ffbf00', fontSize: '8px', marginLeft: '4px' }}>
+                                        (+{formatted.percentChange.toFixed(1)}%)
+                                      </span>
+                                    )}
+                                  </span>
+                                );
+                              })()}
+                              {acceptedBillions > 0 && (() => {
+                                const acceptedValue = acceptedBillions * 1_000_000_000;
+                                // Compare with previous operation in the array
+                                const prevOperation = idx < data.operationLog.length - 1 ? data.operationLog[idx + 1] : null;
+                                const prevAccepted = prevOperation?.amountAccepted ? prevOperation.amountAccepted * 1_000_000_000 : null;
+                                const formatted = formatCompactValue(acceptedValue, prevAccepted);
+                                if (formatted.text === '—') return null;
+                                return (
+                                  <span style={{ 
+                                    color: formatted.isGrowing ? '#ffbf00' : (isSqueeze || isAlert) ? '#ff0000' : formatted.color,
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: (isSqueeze || isAlert || formatted.isGrowing) ? 'bold' : 'normal',
+                                    minWidth: '80px'
+                                  }}>
+                                    Acc: {formatted.text}
+                                    {formatted.isGrowing && formatted.percentChange && (
+                                      <span style={{ color: '#ffbf00', fontSize: '8px', marginLeft: '4px' }}>
+                                        (+{formatted.percentChange.toFixed(1)}%)
+                                      </span>
+                                    )}
+                                  </span>
+                                );
+                              })()}
+                              {submittedBillions === 0 && acceptedBillions === 0 && (
+                                <span style={{ 
+                                  color: '#666',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  flex: '1 1 auto',
+                                  minWidth: '120px'
+                                }}>
+                                  {operation.operation || 'Securities Lending'}: 0.00
+                                </span>
+                              )}
+                            </div>
+                            {isSqueeze && (
+                              <div style={{ 
+                                color: '#ff0000',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                ⚠️ Collateral Squeeze: {squeezeRatio.toFixed(1)}% accepted
+                              </div>
+                            )}
+                            {isAlert && !isSqueeze && (
+                              <div style={{ 
+                                color: '#ff0000',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                ⚠️ Alert: &gt;10% shift from start-of-day baseline
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        {data && data.operationLog ? 'No operations logged yet' : 'Loading liquidity data...'}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 1: Treasury & Liquidity Injection (Top Left) */}
+              {panelType === 'treasury' && (
+                <>
+                  {/* TGA Closing Balance Summary */}
+                  {data.latestFlow && (
+                    <div style={{
+                      padding: '8px',
+                      marginBottom: '6px',
+                      borderBottom: '2px solid #1a1a1a',
+                      backgroundColor: 'rgba(0, 255, 0, 0.05)'
+                    }}>
+                      <div style={{ 
+                        color: '#888',
+                        fontSize: '8px',
+                        textTransform: 'uppercase',
+                        marginBottom: '2px',
+                        fontFamily: 'monospace'
+                      }}>
+                        TGA Closing Balance
+                      </div>
+                      <div style={{ 
+                        color: '#00ff00',
+                        fontSize: '14px',
+                        fontWeight: '700',
+                        fontFamily: 'monospace'
+                      }}>
+                        {(() => {
+                          const tgaValue = data.latestFlow.tgaBalance * 1_000_000_000;
+                          const formatted = formatCompactValue(tgaValue);
+                          return formatted.text === '—' ? 'Clear' : formatted.text;
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Net Daily Change Summary */}
+                  {data.latestFlow && data.latestFlow.netChange !== 0 && (
+                    <div style={{
+                      padding: '8px',
+                      marginBottom: '6px',
+                      borderBottom: '1px solid #1a1a1a',
+                      borderLeft: data.latestFlow.isCashInjection ? '3px solid #00ff00' : '3px solid #ff0000',
+                      backgroundColor: data.latestFlow.isCashInjection ? 'rgba(0, 255, 0, 0.1)' : 'rgba(255, 0, 0, 0.1)'
+                    }}>
+                      <div style={{ 
+                        color: '#888',
+                        fontSize: '8px',
+                        textTransform: 'uppercase',
+                        marginBottom: '2px',
+                        fontFamily: 'monospace'
+                      }}>
+                        Net Daily Change
+                      </div>
+                      <div style={{ 
+                        color: data.latestFlow.isCashInjection ? '#00ff00' : '#ff0000',
+                        fontSize: '12px',
+                        fontWeight: '700',
+                        fontFamily: 'monospace'
+                      }}>
+                        {data.latestFlow.isCashInjection ? '-' : '+'}
+                        {(() => {
+                          const netChangeValue = Math.abs(data.latestFlow.netChange) * 1_000_000_000;
+                          const formatted = formatCompactValue(netChangeValue);
+                          return formatted.text === '—' ? 'Clear' : formatted.text;
+                        })()}
+                      </div>
+                      <div style={{ 
+                        color: '#aaa',
+                        fontSize: '9px',
+                        fontFamily: 'monospace',
+                        marginTop: '2px'
+                      }}>
+                        {data.latestFlow.isCashInjection ? 'Cash Injection (Bullish)' : 'Tax Receipts (Bearish)'}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Forecasted Outlays Info */}
+                  <div style={{
+                    padding: '8px',
+                    marginBottom: '6px',
+                    borderBottom: '1px solid #1a1a1a',
+                    backgroundColor: 'rgba(255, 215, 0, 0.05)'
+                  }}>
+                    <div style={{ 
+                      color: '#888',
+                      fontSize: '8px',
+                      textTransform: 'uppercase',
+                      marginBottom: '4px',
+                      fontFamily: 'monospace'
+                    }}>
+                      Forecasted Outlays (Liquidity Fuel)
+                    </div>
+                    <div style={{ 
+                      color: '#ffd700',
+                      fontSize: '9px',
+                      fontFamily: 'monospace',
+                      lineHeight: '1.4'
+                    }}>
+                      <div>• Social Security: 1st, 3rd Wed</div>
+                      <div>• Defense Payments: 15th, 30th</div>
+                      <div>• Interest Payments: Monthly</div>
+                    </div>
+                  </div>
+
+                  {/* Detailed Net Flow Feed */}
+                  {data.netFlowFeed && data.netFlowFeed.length > 0 ? (
+                    <>
+                      <div style={{
+                        padding: '6px 8px',
+                        borderBottom: '1px solid #1a1a1a',
+                        backgroundColor: 'rgba(0, 242, 255, 0.05)'
+                      }}>
+                        <div style={{ 
+                          color: '#00f2ff',
+                          fontSize: '9px',
+                          textTransform: 'uppercase',
+                          fontFamily: 'monospace',
+                          fontWeight: 'bold'
+                        }}>
+                          Daily Cash Flow History
+                        </div>
+                      </div>
+                      {data.netFlowFeed.map((flow, idx) => {
+                        const isCashInjection = flow.isCashInjection; // Negative change = cash injection (bullish)
+                        
+                        // Check for >10% shift from baseline (alert logic)
+                        let isAlert = false;
+                        if (startOfDayBaseline.treasury && flow.netChange) {
+                          const baselineNetChange = startOfDayBaseline.treasury.netChange || 0;
+                          if (baselineNetChange !== 0) {
+                            isAlert = checkAlertThreshold(Math.abs(flow.netChange), Math.abs(baselineNetChange));
+                          }
+                        }
+                        
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              padding: '8px',
+                              marginBottom: '6px',
+                              borderBottom: '1px solid #1a1a1a',
+                              borderLeft: isAlert ? '3px solid #ff0000' : (isCashInjection ? '3px solid #00ff00' : '3px solid #ff0000'),
+                              backgroundColor: isAlert ? 'rgba(255, 0, 0, 0.1)' : (isCashInjection ? 'rgba(0, 255, 0, 0.05)' : 'rgba(255, 0, 0, 0.05)')
+                            }}
+                          >
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center',
+                              gap: '12px',
+                              marginBottom: '4px',
+                              flexWrap: 'wrap'
+                            }}>
+                              <span style={{ 
+                                color: '#888',
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                minWidth: '80px'
+                              }}>
+                                {flow.date}
+                              </span>
+                              {(() => {
+                                const tgaValue = flow.tgaBalance * 1_000_000_000;
+                                // Compare with previous flow in the array
+                                const prevFlow = idx < data.netFlowFeed.length - 1 ? data.netFlowFeed[idx + 1] : null;
+                                const prevTGA = prevFlow?.tgaBalance ? prevFlow.tgaBalance * 1_000_000_000 : null;
+                                const formattedTGA = formatCompactValue(tgaValue, prevTGA);
+                                return tgaValue > 0 ? (
+                                  <span style={{ 
+                                    color: formattedTGA.isGrowing ? '#ffbf00' : formattedTGA.color,
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    minWidth: '100px',
+                                    fontWeight: formattedTGA.isGrowing ? 'bold' : 'normal'
+                                  }}>
+                                    TGA: {formattedTGA.text}
+                                    {formattedTGA.isGrowing && formattedTGA.percentChange && (
+                                      <span style={{ color: '#ffbf00', fontSize: '8px', marginLeft: '4px' }}>
+                                        (+{formattedTGA.percentChange.toFixed(1)}%)
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : null;
+                              })()}
+                              {(() => {
+                                const netChangeValue = Math.abs(flow.netChange) * 1_000_000_000;
+                                // Compare with previous flow in the array
+                                const prevFlow = idx < data.netFlowFeed.length - 1 ? data.netFlowFeed[idx + 1] : null;
+                                const prevNetChange = prevFlow?.netChange ? Math.abs(prevFlow.netChange) * 1_000_000_000 : null;
+                                const formattedNet = formatCompactValue(netChangeValue, prevNetChange);
+                                return flow.netChange !== 0 ? (
+                                  <span style={{ 
+                                    color: formattedNet.isGrowing ? '#ffbf00' : (isCashInjection ? '#00ff00' : '#ff0000'),
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: formattedNet.isGrowing ? 'bold' : 'bold',
+                                    minWidth: '100px'
+                                  }}>
+                                    {isCashInjection ? '-' : '+'}{formattedNet.text}
+                                    {formattedNet.isGrowing && formattedNet.percentChange && (
+                                      <span style={{ color: '#ffbf00', fontSize: '8px', marginLeft: '4px' }}>
+                                        (+{formattedNet.percentChange.toFixed(1)}%)
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : null;
+                              })()}
+                              {flow.netChange !== 0 && (
+                                <span style={{ 
+                                  color: isCashInjection ? '#00ff00' : '#ff0000',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  minWidth: '100px'
+                                }}>
+                                  {flow.flowType}
+                                </span>
+                              )}
+                            </div>
+                            {isCashInjection && !isAlert && (
+                              <div style={{ 
+                                color: '#00ff00',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                🚀 Cash Injection: Pure Fuel for ES1 Rally
+                              </div>
+                            )}
+                            {isAlert && (
+                              <div style={{ 
+                                color: '#ff0000',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                ⚠️ Alert: &gt;10% shift from start-of-day baseline
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Monitoring Treasury DTS Net Cash Flow...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 2: Global Whale Radar (Top Right) */}
+              {panelType === 'secedgar' && (
+                <>
+                  {/* 13F/G Aggregator Summary */}
+                  {data.allFilings && data.allFilings.length > 0 && (() => {
+                    const form13F = data.allFilings.filter(f => f.formType?.includes('13F') || f.formType?.includes('13G'));
+                    const ownershipShifts = form13F.filter(f => {
+                      // Detect 5% ownership shifts (would need value parsing)
+                      return f.priority === 'Critical' || f.tier === 'Tier 1';
+                    });
+                    
+                    return ownershipShifts.length > 0 ? (
+                      <div style={{
+                        padding: '8px',
+                        marginBottom: '6px',
+                        borderBottom: '2px solid #1a1a1a',
+                        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                        borderLeft: '3px solid #ffd700'
+                      }}>
+                        <div style={{ 
+                          color: '#888',
+                          fontSize: '8px',
+                          textTransform: 'uppercase',
+                          marginBottom: '2px',
+                          fontFamily: 'monospace'
+                        }}>
+                          13F/G Aggregator - 5% Ownership Shifts
+                        </div>
+                        <div style={{ 
+                          color: '#ffd700',
+                          fontSize: '12px',
+                          fontWeight: '700',
+                          fontFamily: 'monospace'
+                        }}>
+                          {ownershipShifts.length} Significant Shift{ownershipShifts.length > 1 ? 's' : ''} Detected
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  {/* Institutional Net Flow Sentiment */}
+                  {data.allFilings && data.allFilings.length > 0 && (() => {
+                    const tier1Filings = data.allFilings.filter(f => f.tier === 'Tier 1');
+                    const blackrock = tier1Filings.filter(f => f.entity?.toUpperCase().includes('BLACKROCK')).length;
+                    const tesla = tier1Filings.filter(f => f.entity?.toUpperCase().includes('TESLA')).length;
+                    const nvidia = tier1Filings.filter(f => f.entity?.toUpperCase().includes('NVIDIA')).length;
+                    
+                    const totalTier1 = blackrock + tesla + nvidia;
+                    const sentimentScore = totalTier1 > 0 ? Math.min(100, (totalTier1 * 20)) : 0;
+                    const sentimentLabel = sentimentScore >= 60 ? 'BULLISH' : sentimentScore >= 30 ? 'NEUTRAL' : 'BEARISH';
+                    const sentimentColor = sentimentScore >= 60 ? '#00ff00' : sentimentScore >= 30 ? '#ffd700' : '#ff0000';
+                    
+                    return (
+                      <div style={{
+                        padding: '8px',
+                        marginBottom: '6px',
+                        borderBottom: '1px solid #1a1a1a',
+                        backgroundColor: 'rgba(0, 242, 255, 0.05)'
+                      }}>
+                        <div style={{ 
+                          color: '#888',
+                          fontSize: '8px',
+                          textTransform: 'uppercase',
+                          marginBottom: '2px',
+                          fontFamily: 'monospace'
+                        }}>
+                          Institutional Net Flow Sentiment
+                        </div>
+                        <div style={{ 
+                          color: sentimentColor,
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          fontFamily: 'monospace',
+                          marginBottom: '4px'
+                        }}>
+                          {sentimentLabel} ({sentimentScore}/100)
+                        </div>
+                        <div style={{ 
+                          color: '#aaa',
+                          fontSize: '9px',
+                          fontFamily: 'monospace',
+                          lineHeight: '1.4'
+                        }}>
+                          <div>BlackRock: {blackrock} | Tesla: {tesla} | NVIDIA: {nvidia}</div>
+                          <div style={{ marginTop: '2px', fontSize: '8px' }}>
+                            Based on today&apos;s Tier 1 filings
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Scrolling Feed Format: [Ticker] | [Form] | [Action] | [Value] */}
+                  {data.allFilings && data.allFilings.length > 0 ? (
+                    <>
+                      <div style={{
+                        padding: '6px 8px',
+                        borderBottom: '1px solid #1a1a1a',
+                        backgroundColor: 'rgba(0, 242, 255, 0.05)'
+                      }}>
+                        <div style={{ 
+                          color: '#00f2ff',
+                          fontSize: '9px',
+                          textTransform: 'uppercase',
+                          fontFamily: 'monospace',
+                          fontWeight: 'bold'
+                        }}>
+                          SEC Filings Feed
+                        </div>
+                      </div>
+                      {data.allFilings.map((item, idx) => {
+                        // Determine color based on priority and watchlist status
+                        let bgColor = 'transparent';
+                        let textColor = '#00ff00';
+                        let borderLeft = 'none';
+                        
+                        // Priority Level 5 (SOFR/ES1) gets Neon Cyan styling
+                        if (item.priority === 'Priority-5' || item.priorityLevel === 5 || item.futuresFocus) {
+                          // Neon Cyan Pulse for Futures Focus
+                          bgColor = 'rgba(0, 255, 255, 0.2)';
+                          textColor = '#00ffff';
+                          borderLeft = '4px solid #00ffff';
+                        } else if (item.isWatchlist && item.liveTracking) {
+                          // Live Tracking: Bright green with pulsing effect
+                          bgColor = 'rgba(0, 255, 0, 0.2)';
+                          textColor = '#00ff00';
+                          borderLeft = '4px solid #00ff00';
+                        } else if (item.tier === 'Tier 1' || item.isWatchlist) {
+                          // Tier 1 Whales or Watchlist: Gold/Bold
+                          bgColor = 'rgba(255, 215, 0, 0.15)';
+                          textColor = '#ffd700';
+                          borderLeft = '3px solid #ffd700';
+                        } else if (item.priority === 'Critical') {
+                          // >$50M: Gold/Bold
+                          bgColor = 'rgba(255, 215, 0, 0.15)';
+                          textColor = '#ffd700';
+                          borderLeft = '3px solid #ffd700';
+                        } else if (item.priority === 'Important') {
+                          // Blue: Mid-size Insider trades ($100k-$1M)
+                          bgColor = 'rgba(0, 191, 255, 0.1)';
+                          textColor = '#00bfff';
+                          borderLeft = '3px solid #00bfff';
+                        }
+                        
+                        // Extract ticker from entity name or use ticker field
+                        const ticker = item.ticker || item.entity.split(' ')[0].toUpperCase() || 'N/A';
+                        
+                        // Handle click: Sync with Strategic Pipeline
+                        const handleEntityClick = (e) => {
+                          e.stopPropagation();
+                          // Store entity and ticker for Strategic Pipeline filtering
+                          localStorage.setItem('whaleEntityFilter', JSON.stringify({
+                            entity: item.entity,
+                            originalEntity: item.originalEntity || item.entity,
+                            ticker: ticker,
+                            category: item.category || 'Other',
+                            timestamp: new Date().toISOString()
+                          }));
+                          // Optionally switch to Strategic Pipeline tab
+                          // This would require passing a callback from App.js
+                        };
+                        
+                        return (
+                          <div
+                            key={`${item.entity}-${item.timestamp}-${idx}`}
+                            style={{
+                              padding: '8px',
+                              marginBottom: '6px',
+                              borderBottom: '1px solid #1a1a1a',
+                              borderLeft: borderLeft,
+                              backgroundColor: bgColor,
+                              cursor: 'pointer',
+                              position: 'relative'
+                            }}
+                            onClick={() => item.edgarUrl && window.open(item.edgarUrl, '_blank')}
+                            onMouseEnter={(e) => {
+                              if (item.edgarUrl) {
+                                e.currentTarget.style.backgroundColor = bgColor !== 'transparent' 
+                                  ? bgColor.replace('0.15', '0.25').replace('0.1', '0.2')
+                                  : '#0a0a0a';
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = bgColor;
+                            }}
+                          >
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center',
+                              gap: '12px',
+                              marginBottom: '4px',
+                              flexWrap: 'wrap'
+                            }}>
+                              {item.newTag && (
+                                <span style={{ 
+                                  color: '#ff0000',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 'bold',
+                                  minWidth: '50px'
+                                }}>
+                                  {item.newTag}
+                                </span>
+                              )}
+                              {item.priorityLevel === 5 && (
+                                <span style={{ 
+                                  color: '#00ffff',
+                                  fontSize: '8px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 'bold',
+                                  padding: '2px 6px',
+                                  border: '1px solid #00ffff',
+                                  borderRadius: '3px',
+                                  backgroundColor: 'rgba(0, 255, 255, 0.2)',
+                                  animation: 'neonPulse 2s infinite',
+                                  minWidth: '90px',
+                                  boxShadow: '0 0 10px #00ffff'
+                                }}>
+                                  🔵 PRIORITY-5
+                                </span>
+                              )}
+                              {item.liveTracking && item.priorityLevel !== 5 && (
+                                <span style={{ 
+                                  color: '#00ff00',
+                                  fontSize: '8px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 'bold',
+                                  padding: '2px 6px',
+                                  border: '1px solid #00ff00',
+                                  borderRadius: '3px',
+                                  backgroundColor: 'rgba(0, 255, 0, 0.1)',
+                                  animation: 'pulse 2s infinite',
+                                  minWidth: '80px'
+                                }}>
+                                  🔴 LIVE TRACKING
+                                </span>
+                              )}
+                              <span 
+                                style={{ 
+                                  color: textColor,
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: item.tier === 'Tier 1' || item.priority === 'Critical' || item.isWatchlist ? 'bold' : 'normal',
+                                  minWidth: '60px',
+                                  cursor: 'pointer',
+                                  textDecoration: item.isWatchlist ? 'underline' : 'none'
+                                }}
+                                onClick={handleEntityClick}
+                                title={item.isWatchlist ? `Click to filter Strategic Pipeline for ${item.entity}` : ''}
+                              >
+                                {ticker}
+                              </span>
+                              <span style={{ 
+                                color: textColor,
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                minWidth: '60px'
+                              }}>
+                                {item.formType}
+                              </span>
+                              <span style={{ 
+                                color: textColor,
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                minWidth: '80px'
+                              }}>
+                                {item.action}
+                              </span>
+                              <span style={{ 
+                                color: textColor,
+                                fontSize: '11px',
+                                fontFamily: 'monospace',
+                                fontWeight: item.tier === 'Tier 1' || item.priority === 'Critical' ? 'bold' : 'normal',
+                                flex: '1 1 auto',
+                                minWidth: '100px'
+                              }}>
+                                {item.tradeValue || 'Event Summary'}
+                              </span>
+                            </div>
+                            <div style={{ 
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              marginTop: '4px',
+                              flexWrap: 'wrap'
+                            }}>
+                              {item.futuresFocus && item.futuresAssets && item.futuresAssets.length > 0 && (
+                                <span style={{
+                                  fontSize: '8px',
+                                  color: '#00ffff',
+                                  fontFamily: 'monospace',
+                                  padding: '2px 4px',
+                                  backgroundColor: 'rgba(0, 255, 255, 0.1)',
+                                  border: '1px solid #00ffff',
+                                  borderRadius: '2px'
+                                }}>
+                                  ⚡ {item.futuresAssets.join(' + ')}
+                                </span>
+                              )}
+                              {item.isWatchlist && (
+                                <span 
+                                  style={{ 
+                                    fontSize: '8px',
+                                    color: item.priorityLevel === 5 ? '#00ffff' : '#00ff00',
+                                    fontFamily: 'monospace',
+                                    cursor: 'pointer',
+                                    textDecoration: 'underline'
+                                  }}
+                                  onClick={handleEntityClick}
+                                  title={`Click to follow ${item.entity} in Strategic Pipeline`}
+                                >
+                                  👤 {item.entity} ({item.category})
+                                </span>
+                              )}
+                              {item.tier === 'Tier 1' && !item.isWatchlist && (
+                                <span style={{ 
+                                  fontSize: '8px',
+                                  color: '#ffd700',
+                                  marginTop: '2px',
+                                  fontFamily: 'monospace'
+                                }}>
+                                  🟡 Tier 1 Whale: {item.entity}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Aggressively polling SEC EDGAR RSS V3...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 3: Central Bank Stress & Repo (Bottom Left) */}
+              {panelType === 'ofr' && (
+                <>
+                  {/* ON RRP Facility Display */}
+                  {fredData && fredData.RRPONTSYD !== null && fredData.RRPONTSYD !== undefined && (
+                    <div style={{
+                      padding: '8px',
+                      marginBottom: '6px',
+                      borderBottom: '2px solid #1a1a1a',
+                      backgroundColor: 'rgba(0, 242, 255, 0.05)',
+                      borderLeft: '3px solid #00f2ff'
+                    }}>
+                      <div style={{ 
+                        color: '#888',
+                        fontSize: '8px',
+                        textTransform: 'uppercase',
+                        marginBottom: '2px',
+                        fontFamily: 'monospace'
+                      }}>
+                        ON RRP Facility (Overnight Reverse Repo)
+                      </div>
+                      <div style={{ 
+                        color: '#00f2ff',
+                        fontSize: '12px',
+                        fontWeight: '700',
+                        fontFamily: 'monospace',
+                        marginBottom: '4px'
+                      }}>
+                        {(() => {
+                          const rrpValue = fredData.RRPONTSYD;
+                          const formatted = formatCompactValue(rrpValue);
+                          return formatted.text;
+                        })()}
+                      </div>
+                      <div style={{ 
+                        color: '#aaa',
+                        fontSize: '8px',
+                        fontFamily: 'monospace',
+                        fontStyle: 'italic'
+                      }}>
+                        {(() => {
+                          const rrpValue = fredData.RRPONTSYD;
+                          // High RRP = liquidity being drained; falling RRP = liquidity hitting market
+                          if (rrpValue > 2_000_000_000_000) {
+                            return '⚠️ High RRP = Liquidity being drained';
+                          } else if (rrpValue < 500_000_000_000) {
+                            return '✅ Falling RRP = Liquidity hitting market';
+                          }
+                          return 'Monitoring RRP levels';
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Systemic Risk Heatmap - Equity vs Credit Spread */}
+                  {data.categories && data.categories.length > 0 && (() => {
+                    const equityCategory = data.categories.find(c => c.name === 'Equity');
+                    const creditCategory = data.categories.find(c => c.name === 'Credit');
+                    const equityValue = equityCategory?.value || 0;
+                    const creditValue = creditCategory?.value || 0;
+                    const spread = Math.abs(equityValue - creditValue);
+                    const isDivergence = spread > 0.1; // Significant divergence
+                    
+                    return (
+                      <div style={{
+                        padding: '8px',
+                        marginBottom: '6px',
+                        borderBottom: '1px solid #1a1a1a',
+                        backgroundColor: isDivergence ? 'rgba(255, 0, 0, 0.1)' : 'transparent',
+                        borderLeft: isDivergence ? '3px solid #ff0000' : 'none'
+                      }}>
+                        <div style={{ 
+                          color: '#888',
+                          fontSize: '8px',
+                          textTransform: 'uppercase',
+                          marginBottom: '4px',
+                          fontFamily: 'monospace'
+                        }}>
+                          Systemic Risk Heatmap (Equity vs Credit)
+                        </div>
+                        <div style={{ 
+                          display: 'flex',
+                          gap: '12px',
+                          marginBottom: '4px'
+                        }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ 
+                              color: '#aaa',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginBottom: '2px'
+                            }}>
+                              Equity
+                            </div>
+                            <div style={{ 
+                              color: equityValue > 0 ? '#ff0000' : '#00ff00',
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              fontFamily: 'monospace'
+                            }}>
+                              {equityValue !== null ? equityValue.toFixed(3) : '0.000'}
+                            </div>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ 
+                              color: '#aaa',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginBottom: '2px'
+                            }}>
+                              Credit
+                            </div>
+                            <div style={{ 
+                              color: creditValue > 0 ? '#ff0000' : '#00ff00',
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              fontFamily: 'monospace'
+                            }}>
+                              {creditValue !== null ? creditValue.toFixed(3) : '0.000'}
+                            </div>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ 
+                              color: '#aaa',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginBottom: '2px'
+                            }}>
+                              Spread
+                            </div>
+                            <div style={{ 
+                              color: isDivergence ? '#ff0000' : '#00ff00',
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              fontFamily: 'monospace'
+                            }}>
+                              {spread.toFixed(3)}
+                            </div>
+                          </div>
+                        </div>
+                        {isDivergence && (
+                          <div style={{ 
+                            color: '#ff0000',
+                            fontSize: '8px',
+                            fontFamily: 'monospace',
+                            marginTop: '2px'
+                          }}>
+                            ⚠️ Divergence detected - Systemic risk rising
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Main Index Display */}
+                  {data.stressIndex !== null && (
+                    <div style={{
+                      padding: '8px',
+                      marginBottom: '6px',
+                      borderBottom: '2px solid #1a1a1a',
+                      backgroundColor: 'transparent'
+                    }}>
+                      <div style={{ 
+                        color: '#888',
+                        fontSize: '8px',
+                        textTransform: 'uppercase',
+                        marginBottom: '2px',
+                        fontFamily: 'monospace'
+                      }}>
+                        OFR FSI Index
+                      </div>
+                      <div style={{ 
+                        color: data.stressIndex < 0 ? '#00ff00' : 
+                               data.stressIndex > 1.0 ? '#ff0000' : '#ffbf00',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        fontFamily: 'Courier New, monospace'
+                      }}>
+                        {data.stressIndex.toFixed(3)}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* 5-Category Breakdown */}
+                  {data.categories && data.categories.length > 0 ? (
+                    <>
+                      {data.categories.map((category, idx) => {
+                        const isSpike = category.isSpike && category.changePercent > 10;
+                        
+                        // Check for >10% shift from baseline (alert logic)
+                        let isAlert = false;
+                        if (startOfDayBaseline?.ofrStress && startOfDayBaseline.ofrStress.categories) {
+                          const baselineCategory = startOfDayBaseline.ofrStress.categories.find(c => c.name === category.name);
+                          if (baselineCategory && baselineCategory.value !== 0) {
+                            isAlert = checkAlertThreshold(category.value, baselineCategory.value);
+                          }
+                        }
+                        
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              padding: '8px',
+                              marginBottom: '6px',
+                              borderBottom: '1px solid #1a1a1a',
+                              borderLeft: (isSpike || isAlert) ? '3px solid #ff0000' : 'none',
+                              backgroundColor: (isSpike || isAlert) ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                            }}
+                          >
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center',
+                              gap: '12px',
+                              marginBottom: '4px',
+                              flexWrap: 'wrap'
+                            }}>
+                              <span style={{ 
+                                color: isSpike ? '#ff0000' : '#888',
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                fontWeight: isSpike ? 'bold' : 'normal',
+                                minWidth: '100px'
+                              }}>
+                                {category.name}
+                              </span>
+                              <span style={{ 
+                                color: (isSpike || isAlert) ? '#ff0000' : '#ffff00',
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                fontWeight: (isSpike || isAlert) ? 'bold' : 'normal',
+                                minWidth: '80px'
+                              }}>
+                                {category.value !== null && category.value !== undefined ? category.value.toFixed(3) : '0.000'}
+                              </span>
+                              <span style={{ 
+                                color: category.changePercent > 0 ? '#ff0000' : '#00ff00',
+                                fontSize: '9px',
+                                fontFamily: 'monospace',
+                                fontWeight: (isSpike || isAlert) ? 'bold' : 'normal',
+                                minWidth: '80px'
+                              }}>
+                                {category.changePercent > 0 ? '+' : ''}{category.changePercent !== null && category.changePercent !== undefined ? category.changePercent.toFixed(1) : '0.0'}%
+                              </span>
+                            </div>
+                            {isSpike && (
+                              <div style={{ 
+                                color: '#ff0000',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                ⚠️ Spike: {category.name} increased by {category.changePercent ? category.changePercent.toFixed(1) : '0.0'}% in one day
+                              </div>
+                            )}
+                            {isAlert && !isSpike && (
+                              <div style={{ 
+                                color: '#ff0000',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                ⚠️ Alert: &gt;10% shift from start-of-day baseline
+                              </div>
+                            )}
+                            {category.name === 'Safe Assets' && category.changePercent > 0 && data.stressIndex < 0 && (
+                              <div style={{ 
+                                color: '#ffbf00',
+                                fontSize: '8px',
+                                fontFamily: 'monospace',
+                                marginTop: '2px'
+                              }}>
+                                🐋 Whales moving to safety before price drop
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Monitoring OFR FSI Index & Categories...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 5: FRED Economic Data (Bottom Center) */}
+              {panelType === 'fred' && (
+                <>
+                  {data ? (
+                    <div style={{ padding: '8px' }}>
+                      {/* Net Liquidity */}
+                      {data.netLiquidityTrillions !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.netLiquidityTrillions < 1.5 ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            Net Liquidity (WALCL - TGA - RRP)
+                          </div>
+                          <div style={{ 
+                            color: data.netLiquidityTrillions < 1.5 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            ${data.netLiquidityTrillions.toFixed(2)}T
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SOFR */}
+                      {data.SOFR !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.SOFR > 5.0 ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            SOFR (Secured Overnight Financing Rate)
+                          </div>
+                          <div style={{ 
+                            color: data.SOFR > 5.0 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.SOFR.toFixed(2)}%
+                          </div>
+                        </div>
+                      )}
+
+                      {/* DXY */}
+                      {data.DXY !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            DXY (Dollar Index)
+                          </div>
+                          <div style={{ 
+                            color: '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.DXY.toFixed(2)}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* US10Y */}
+                      {data.US10Y !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            10-Year Treasury Yield
+                          </div>
+                          <div style={{ 
+                            color: '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.US10Y.toFixed(2)}%
+                          </div>
+                        </div>
+                      )}
+
+                      {/* STLFSI4 */}
+                      {data.STLFSI4 !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.STLFSI4 > 0 ? 'rgba(255, 0, 0, 0.1)' : 'transparent'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            Financial Stress Index (STLFSI4)
+                          </div>
+                          <div style={{ 
+                            color: data.STLFSI4 > 0 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.STLFSI4.toFixed(3)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Loading FRED economic data...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 5: FRED Economic Data (Bottom Center) */}
+              {panelType === 'fred' && (
+                <>
+                  {data ? (
+                    <div style={{ padding: '8px', overflowY: 'auto', height: '100%' }}>
+                      {/* Net Liquidity */}
+                      {data.netLiquidityTrillions !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.netLiquidityTrillions < 1.5 ? 'rgba(255, 0, 0, 0.1)' : 'transparent',
+                          borderLeft: data.netLiquidityTrillions < 1.5 ? '3px solid #ff0000' : 'none'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            Net Liquidity (WALCL - TGA - RRP)
+                          </div>
+                          <div style={{ 
+                            color: data.netLiquidityTrillions < 1.5 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            ${data.netLiquidityTrillions.toFixed(2)}T
+                          </div>
+                          {data.netLiquidityTrillions < 1.5 && (
+                            <div style={{ 
+                              color: '#ff0000',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginTop: '2px'
+                            }}>
+                              ⚠️ Critical: Below $1.5T threshold
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* SOFR */}
+                      {data.SOFR !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.SOFR > 5.0 ? 'rgba(255, 0, 0, 0.1)' : 'transparent',
+                          borderLeft: data.SOFR > 5.0 ? '3px solid #ff0000' : 'none'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            SOFR (Secured Overnight Financing Rate)
+                          </div>
+                          <div style={{ 
+                            color: data.SOFR > 5.0 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.SOFR.toFixed(2)}%
+                          </div>
+                          {data.SOFR > 5.0 && (
+                            <div style={{ 
+                              color: '#ff0000',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginTop: '2px'
+                            }}>
+                              ⚠️ Funding stress detected
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* DXY */}
+                      {data.DXY !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            DXY (Dollar Index)
+                          </div>
+                          <div style={{ 
+                            color: '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.DXY.toFixed(2)}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* US10Y */}
+                      {data.US10Y !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            10-Year Treasury Yield
+                          </div>
+                          <div style={{ 
+                            color: '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.US10Y.toFixed(2)}%
+                          </div>
+                        </div>
+                      )}
+
+                      {/* US2Y (if available) */}
+                      {data.US2Y !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            2-Year Treasury Yield
+                          </div>
+                          <div style={{ 
+                            color: '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.US2Y.toFixed(2)}%
+                          </div>
+                          {data.US10Y !== null && data.US2Y !== null && (
+                            <div style={{ 
+                              color: (data.US10Y - data.US2Y) < 0 ? '#ff0000' : '#00ff00',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginTop: '2px'
+                            }}>
+                              Yield Curve: {(data.US10Y - data.US2Y).toFixed(2)}%
+                              {(data.US10Y - data.US2Y) < 0 && (
+                                <span style={{ color: '#ff0000', marginLeft: '4px' }}>
+                                  ⚠️ INVERTED
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* STLFSI4 */}
+                      {data.STLFSI4 !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          backgroundColor: data.STLFSI4 > 0 ? 'rgba(255, 0, 0, 0.1)' : 'transparent',
+                          borderLeft: data.STLFSI4 > 0 ? '3px solid #ff0000' : 'none'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            Financial Stress Index (STLFSI4)
+                          </div>
+                          <div style={{ 
+                            color: data.STLFSI4 > 0 ? '#ff0000' : '#00ff00',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {data.STLFSI4.toFixed(3)}
+                          </div>
+                          {data.STLFSI4 > 0 && (
+                            <div style={{ 
+                              color: '#ff0000',
+                              fontSize: '8px',
+                              fontFamily: 'monospace',
+                              marginTop: '2px'
+                            }}>
+                              ⚠️ Markets under stress
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Loading FRED economic data...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Panel 4: Debt Strategic Pipeline (Bottom Right) */}
+              {panelType === 'debt' && (
+                <>
+                  {data ? (
+                    <div style={{ padding: '8px', overflowY: 'auto', height: '100%' }}>
+                      {/* Treasury Auction Results */}
+                      {data.auctionResults && data.auctionResults.length > 0 && (
+                        <>
+                          <div style={{
+                            padding: '6px 8px',
+                            borderBottom: '1px solid #1a1a1a',
+                            backgroundColor: 'rgba(255, 215, 0, 0.05)'
+                          }}>
+                            <div style={{ 
+                              color: '#ffd700',
+                              fontSize: '9px',
+                              textTransform: 'uppercase',
+                              fontFamily: 'monospace',
+                              fontWeight: 'bold'
+                            }}>
+                              Treasury Auction Results (Bid-to-Cover)
+                            </div>
+                          </div>
+                          {data.auctionResults.map((auction, idx) => {
+                            const isStrong = auction.bidToCover > 2.5;
+                            const isWeak = auction.bidToCover < 2.0;
+                            
+                            return (
+                              <div
+                                key={idx}
+                                style={{
+                                  padding: '8px',
+                                  marginBottom: '6px',
+                                  borderBottom: '1px solid #1a1a1a',
+                                  borderLeft: isStrong ? '3px solid #00ff00' : isWeak ? '3px solid #ff0000' : 'none',
+                                  backgroundColor: isStrong ? 'rgba(0, 255, 0, 0.05)' : isWeak ? 'rgba(255, 0, 0, 0.05)' : 'transparent'
+                                }}
+                              >
+                                <div style={{ 
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  marginBottom: '4px'
+                                }}>
+                                  <div style={{ 
+                                    color: '#888',
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: 'bold'
+                                  }}>
+                                    {auction.maturity}
+                                  </div>
+                                  <div style={{ 
+                                    color: isStrong ? '#00ff00' : isWeak ? '#ff0000' : '#00ff00',
+                                    fontSize: '11px',
+                                    fontWeight: '700',
+                                    fontFamily: 'monospace'
+                                  }}>
+                                    {auction.bidToCover.toFixed(2)}x
+                                  </div>
+                                </div>
+                                <div style={{ 
+                                  color: '#aaa',
+                                  fontSize: '8px',
+                                  fontFamily: 'monospace'
+                                }}>
+                                  {auction.date}
+                                </div>
+                                {isStrong && (
+                                  <div style={{ 
+                                    color: '#00ff00',
+                                    fontSize: '8px',
+                                    fontFamily: 'monospace',
+                                    marginTop: '2px'
+                                  }}>
+                                    ✅ Strong demand
+                                  </div>
+                                )}
+                                {isWeak && (
+                                  <div style={{ 
+                                    color: '#ff0000',
+                                    fontSize: '8px',
+                                    fontFamily: 'monospace',
+                                    marginTop: '2px'
+                                  }}>
+                                    ⚠️ Weak demand
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+
+                      {/* DTS Breakdown - Operating Cash Balance */}
+                      {data.operatingCashBalance !== null && (
+                        <div style={{
+                          padding: '8px',
+                          marginBottom: '6px',
+                          borderBottom: '1px solid #1a1a1a',
+                          borderTop: '2px solid #1a1a1a',
+                          backgroundColor: 'rgba(0, 242, 255, 0.05)'
+                        }}>
+                          <div style={{ 
+                            color: '#888',
+                            fontSize: '8px',
+                            textTransform: 'uppercase',
+                            marginBottom: '2px',
+                            fontFamily: 'monospace'
+                          }}>
+                            Daily Treasury Statement - Operating Cash Balance
+                          </div>
+                          <div style={{ 
+                            color: '#00f2ff',
+                            fontSize: '12px',
+                            fontWeight: '700',
+                            fontFamily: 'monospace'
+                          }}>
+                            {(() => {
+                              const balanceValue = data.operatingCashBalance * 1_000_000_000;
+                              const formatted = formatCompactValue(balanceValue);
+                              return formatted.text;
+                            })()}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Global Maturity Calendar */}
+                      {data.maturityCalendar && data.maturityCalendar.length > 0 && (
+                        <>
+                          <div style={{
+                            padding: '6px 8px',
+                            borderBottom: '1px solid #1a1a1a',
+                            borderTop: '2px solid #1a1a1a',
+                            backgroundColor: 'rgba(255, 215, 0, 0.05)'
+                          }}>
+                            <div style={{ 
+                              color: '#ffd700',
+                              fontSize: '9px',
+                              textTransform: 'uppercase',
+                              fontFamily: 'monospace',
+                              fontWeight: 'bold'
+                            }}>
+                              Global Maturity Calendar (Next 30 Days)
+                            </div>
+                          </div>
+                          {data.maturityCalendar.slice(0, 10).map((maturity, idx) => {
+                            const maturityDate = new Date(maturity.date);
+                            const today = new Date();
+                            const daysUntil = Math.ceil((maturityDate - today) / (1000 * 60 * 60 * 24));
+                            const isUpcoming = daysUntil <= 7;
+                            
+                            return (
+                              <div
+                                key={idx}
+                                style={{
+                                  padding: '8px',
+                                  marginBottom: '6px',
+                                  borderBottom: '1px solid #1a1a1a',
+                                  borderLeft: isUpcoming ? '3px solid #ffd700' : 'none',
+                                  backgroundColor: isUpcoming ? 'rgba(255, 215, 0, 0.1)' : 'transparent'
+                                }}
+                              >
+                                <div style={{ 
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  marginBottom: '4px'
+                                }}>
+                                  <div style={{ 
+                                    color: '#888',
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace'
+                                  }}>
+                                    {maturity.date}
+                                  </div>
+                                  <div style={{ 
+                                    color: isUpcoming ? '#ffd700' : '#00ff00',
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: isUpcoming ? 'bold' : 'normal'
+                                  }}>
+                                    {daysUntil}d
+                                  </div>
+                                </div>
+                                <div style={{ 
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <div style={{ 
+                                    color: '#aaa',
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace'
+                                  }}>
+                                    {maturity.maturity} - {maturity.type}
+                                  </div>
+                                  <div style={{ 
+                                    color: '#00ff00',
+                                    fontSize: '9px',
+                                    fontFamily: 'monospace'
+                                  }}>
+                                    ${maturity.amount.toFixed(1)}B
+                                  </div>
+                                </div>
+                                {isUpcoming && (
+                                  <div style={{ 
+                                    color: '#ffd700',
+                                    fontSize: '8px',
+                                    fontFamily: 'monospace',
+                                    marginTop: '2px'
+                                  }}>
+                                    ⚠️ Major rollover approaching
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center' }}>
+                      <span style={{ color: '#666666', fontSize: '11px', fontFamily: 'monospace' }}>
+                        Loading Treasury Debt data...
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* ES1 Target Scraper - Removed from 4-quadrant layout (not part of UI Inheritance) */}
+              {false && panelType === 'es1target' && (
+                <div className="space-y-3">
+                  {/* Header with Bullish Bias Flag */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs text-gray-600 font-semibold">ES1 Target Scraper</div>
+                    {data && data.bullishBias && (
+                      <div className="px-3 py-1 rounded text-xs font-bold" style={{ backgroundColor: '#10b981', color: '#ffffff' }}>
+                        🚀 BULLISH BIAS
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Repo Total Display */}
+                  {data && data.repoTotal !== null && (
+                    <div className="mb-3 p-2 border rounded" style={{ borderColor: '#e5e7eb', backgroundColor: '#f9fafb' }}>
+                      <div className="text-xs text-gray-600 mb-1">NY Fed Repo Total</div>
+                      <div className="text-lg font-bold text-gray-900">
+                        ${(data.repoTotal / 1_000_000_000).toFixed(2)}B
+                      </div>
+                      {data.repoTotal > 20_000_000_000 && (
+                        <div className="text-xs text-green-600 mt-1">Above $20B threshold</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Insider Buys Section */}
+                  <div className="mb-3">
+                    <div className="text-xs text-gray-600 font-semibold mb-2">
+                      Form 4 Insider Buys {'>$5M'} ({data?.insiderBuys?.length || 0})
+                    </div>
+                    {data?.insiderBuys && data.insiderBuys.length > 0 ? (
+                      <div className="border rounded" style={{ borderColor: '#e5e7eb', maxHeight: '200px', overflowY: 'auto' }}>
+                        <div className="grid grid-cols-12 gap-2 p-2 bg-gray-50 border-b text-xs font-semibold text-gray-700" style={{ borderColor: '#e5e7eb', fontSize: '10px', fontFamily: 'monospace' }}>
+                          <div className="col-span-3">Company</div>
+                          <div className="col-span-3">Entity</div>
+                          <div className="col-span-2">Value</div>
+                          <div className="col-span-2">Timestamp</div>
+                          <div className="col-span-2">EDGAR</div>
+                        </div>
+                        <div>
+                          {data.insiderBuys.map((item, idx) => {
+                            const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            }) : 'N/A';
+                            
+                            return (
+                              <div
+                                key={idx}
+                                className="grid grid-cols-12 gap-2 p-2 border-b hover:bg-gray-50"
+                                style={{ 
+                                  borderColor: '#e5e7eb',
+                                  fontSize: '10px',
+                                  fontFamily: 'monospace'
+                                }}
+                              >
+                                <div className="col-span-3 text-gray-900 font-medium" title={item.company}>
+                                  {item.company}
+                                </div>
+                                <div className="col-span-3 text-gray-700 truncate" title={item.entity}>
+                                  {item.entity}
+                                </div>
+                                <div className="col-span-2 text-gray-900 font-medium">
+                                  {item.tradeValue}
+                                </div>
+                                <div className="col-span-2 text-gray-600 text-xs">
+                                  {timestamp}
+                                </div>
+                                <div className="col-span-2">
+                                  <a
+                                    href={item.edgarUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800 hover:underline text-xs"
+                                    title="View SEC Filing"
+                                  >
+                                    View &rarr;
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500 text-center py-4">
+                        No Insider Buys {'>$5M'} detected
+                      </div>
+                    )}
+                  </div>
+
+                  {/* N-PORT S&P 500 Exposure Section */}
+                  <div>
+                    <div className="text-xs text-gray-600 font-semibold mb-2">
+                      N-PORT S&P 500 Index Exposure Increases ({data?.nportExposure?.length || 0})
+                    </div>
+                    {data?.nportExposure && data.nportExposure.length > 0 ? (
+                      <div className="border rounded" style={{ borderColor: '#e5e7eb', maxHeight: '200px', overflowY: 'auto' }}>
+                        <div className="grid grid-cols-12 gap-2 p-2 bg-gray-50 border-b text-xs font-semibold text-gray-700" style={{ borderColor: '#e5e7eb', fontSize: '10px', fontFamily: 'monospace' }}>
+                          <div className="col-span-4">Institution</div>
+                          <div className="col-span-2">Value</div>
+                          <div className="col-span-2">Timestamp</div>
+                          <div className="col-span-4">EDGAR</div>
+                        </div>
+                        <div>
+                          {data.nportExposure.map((item, idx) => {
+                            const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            }) : 'N/A';
+                            
+                            return (
+                              <div
+                                key={idx}
+                                className="grid grid-cols-12 gap-2 p-2 border-b hover:bg-gray-50"
+                                style={{ 
+                                  borderColor: '#e5e7eb',
+                                  fontSize: '10px',
+                                  fontFamily: 'monospace'
+                                }}
+                              >
+                                <div className="col-span-4 text-gray-900 truncate" title={item.entity}>
+                                  {item.entity}
+                                </div>
+                                <div className="col-span-2 text-gray-700">
+                                  {item.tradeValue}
+                                </div>
+                                <div className="col-span-2 text-gray-600 text-xs">
+                                  {timestamp}
+                                </div>
+                                <div className="col-span-4">
+                                  <a
+                                    href={item.edgarUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800 hover:underline text-xs"
+                                    title="View SEC Filing"
+                                  >
+                                    View &rarr;
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500 text-center py-4">
+                        No N-PORT S&P 500 exposure increases detected
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Source Info */}
+                  <div className="text-xs text-gray-500 pt-2 border-t" style={{ borderColor: '#e5e7eb' }}>
+                    <div className="mb-1">Source: sec.gov/cgi-bin/browse-edgar + NY Fed Repo (FRED)</div>
+                    <div>Monitoring: Top 20 S&P 500 companies | Form 4 Buys {'>$5M'} | N-PORT S&P 500 increases</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Timestamp */}
+              <div className="pt-3 border-t" style={{ borderColor: '#e5e7eb' }}>
+                <div className="text-xs text-gray-500">
+                  Updated: {formatTimestamp(data.timestamp || data.repoTimestamp || data.debtTimestamp)}
+                </div>
+              </div>
+
+              {/* Source Link */}
+              {sourceUrl && (
+                <div className="pt-2">
+                  <a
+                    href={sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                  >
+                    View Source &rarr;
+                  </a>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <span className="text-sm text-gray-500">No data available</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }, (prevProps, nextProps) => {
+    // Custom comparison to prevent unnecessary re-renders
+    // Only re-render if data actually changed, not on every state update
+    // Deep comparison for data objects to prevent re-renders when data hasn't changed
+    const dataEqual = JSON.stringify(prevProps.data) === JSON.stringify(nextProps.data);
+    
+    return (
+      prevProps.loading === nextProps.loading &&
+      prevProps.error === nextProps.error &&
+      dataEqual &&
+      prevProps.panelType === nextProps.panelType &&
+      prevProps.title === nextProps.title &&
+      prevProps.subtitle === nextProps.subtitle
+    );
+  });
+
+  // Calculate Government Radar Summary - Beginner-Friendly Big Moves
+  const calculateGovernmentRadarSummary = () => {
+    const bigMoves = [];
+    
+    // Check Treasury for Cash Injections (big moves)
+    if (treasuryData.data?.netFlowFeed) {
+      const significantFlows = treasuryData.data.netFlowFeed.filter(flow => 
+        flow.netChange !== 0 && Math.abs(flow.netChange) >= 10 // $10B+ moves
+      );
+      if (significantFlows.length > 0) {
+        const latest = significantFlows[0];
+        if (latest.isCashInjection) {
+          const netChangeValue = Math.abs(latest.netChange) * 1_000_000_000;
+          const formatted = formatCompactValue(netChangeValue);
+          if (formatted.text !== '—') {
+            bigMoves.push({
+              type: 'CASH_INJECTION',
+              message: `Treasury injected ${formatted.text} into markets`,
+              impact: 'BULLISH',
+              explanation: 'Government spending money = more liquidity = markets go up',
+              value: netChangeValue
+            });
+          }
+        } else {
+          const netChangeValue = Math.abs(latest.netChange) * 1_000_000_000;
+          const formatted = formatCompactValue(netChangeValue);
+          if (formatted.text !== '—') {
+            bigMoves.push({
+              type: 'CASH_WITHDRAWAL',
+              message: `Treasury withdrew ${formatted.text} from markets`,
+              impact: 'BEARISH',
+              explanation: 'Government taking money out = less liquidity = markets go down',
+              value: netChangeValue
+            });
+          }
+        }
+      }
+    }
+    
+    // Check NY Fed for large repo operations
+    if (nyFedData.data?.operationLog) {
+      const largeOps = nyFedData.data.operationLog.filter(op => 
+        op.amountAccepted && op.amountAccepted >= 50 // $50B+ operations
+      );
+      if (largeOps.length > 0) {
+        const latest = largeOps[0];
+        const repoValue = latest.amountAccepted * 1_000_000_000;
+        const formatted = formatCompactValue(repoValue);
+        bigMoves.push({
+          type: 'FED_REPO',
+          message: `Fed accepted ${formatted.text} in repo operations`,
+          impact: 'NEUTRAL',
+          explanation: 'Fed managing short-term liquidity - watching for stress signals',
+          value: repoValue
+        });
+      }
+    }
+    
+    // Check Whale Radar for Tier 1 moves
+    if (secEdgarData.data?.allFilings) {
+      const tier1Moves = secEdgarData.data.allFilings.filter(f => f.tier === 'Tier 1');
+      if (tier1Moves.length > 0) {
+        bigMoves.push({
+          type: 'WHALE_MOVE',
+          message: `${tier1Moves.length} Tier 1 whale filing${tier1Moves.length > 1 ? 's' : ''} detected`,
+          impact: 'WATCH',
+          explanation: 'Big institutions (BlackRock, Tesla, NVIDIA) making moves - follow the smart money',
+          value: tier1Moves.length
+        });
+      }
+    }
+    
+    // Check Stress Index for spikes
+    if (ofrStressData.data?.stressIndex !== null && ofrStressData.data?.stressIndex > 0.5) {
+      bigMoves.push({
+        type: 'STRESS_SPIKE',
+        message: `Financial stress index at ${ofrStressData.data.stressIndex.toFixed(2)}`,
+        impact: 'BEARISH',
+        explanation: 'High stress = markets worried = potential selloff',
+        value: ofrStressData.data.stressIndex
+      });
+    }
+    
+    // Check FRED data for significant moves
+    if (fredData.data) {
+      // Net Liquidity changes
+      if (fredData.data.netLiquidityTrillions !== null && fredData.data.netLiquidityTrillions < 1.5) {
+        bigMoves.push({
+          type: 'LIQUIDITY_WARNING',
+          message: `Net Liquidity below $1.5T - Critical threshold`,
+          impact: 'BEARISH',
+          explanation: 'Low liquidity = less fuel for markets = crash risk',
+          value: fredData.data.netLiquidityTrillions
+        });
+      }
+      
+      // SOFR spikes
+      if (fredData.data.SOFR !== null && fredData.data.SOFR > 5.0) {
+        bigMoves.push({
+          type: 'SOFR_SPIKE',
+          message: `SOFR at ${fredData.data.SOFR.toFixed(2)}% - Funding stress`,
+          impact: 'BEARISH',
+          explanation: 'High SOFR = expensive money = markets struggle',
+          value: fredData.data.SOFR
+        });
+      }
+      
+      // Yield curve inversion
+      if (fredData.data.US10Y !== null && fredData.data.US2Y !== null) {
+        const yieldCurve = fredData.data.US10Y - fredData.data.US2Y;
+        if (yieldCurve < 0) {
+          bigMoves.push({
+            type: 'YIELD_INVERSION',
+            message: `Yield curve inverted - Recession signal`,
+            impact: 'BEARISH',
+            explanation: 'Inverted curve = recession warning = markets decline',
+            value: Math.abs(yieldCurve)
+          });
+        }
+      }
+    }
+    
+    return bigMoves.sort((a, b) => b.value - a.value); // Sort by value descending
+  };
+
+  const radarSummary = calculateGovernmentRadarSummary();
+
+  return (
+    <div 
+      className="bg-black text-fluorescent-green" 
+      style={{ 
+        fontFamily: "'Roboto Mono', monospace",
+        height: '100vh',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden'
+      }}
+    >
+      {/* ES1 Volume Spike Alert - Flash Macro Pulse Header */}
+      <ES1VolumeSpikeAlert />
+      
+      {/* Priority Level 5 Alerts - Neon Cyan Pulse (SOFR/ES1) */}
+      {Array.isArray(priority5Alerts) && priority5Alerts.length > 0 && (
+        <Priority5AlertPanel alerts={priority5Alerts} />
+      )}
+      
+      {/* Government Radar Summary Box - Fixed Height Header (60px) */}
+      <div 
+        className="top-radar-header"
+        style={{
+          backgroundColor: '#0a0a0a',
+          border: '2px solid #00ff00',
+          padding: '5px',
+          flexShrink: 0,
+          height: '60px',
+          overflow: 'hidden',
+          boxSizing: 'border-box'
+        }}
+      >
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'space-between',
+          marginBottom: '2px'
+        }}>
+          <h2 style={{ 
+            color: '#00ff00', 
+            fontSize: '10px', 
+            fontWeight: 'bold',
+            fontFamily: 'monospace',
+            textTransform: 'uppercase',
+            margin: 0
+          }}>
+            🛰️ GOVERNMENT RADAR
+          </h2>
+          <span style={{ 
+            color: '#00ff00', 
+            fontSize: '7px',
+            fontFamily: 'monospace',
+            padding: '1px 4px',
+            border: '1px solid #00ff00',
+            borderRadius: '2px'
+          }}>
+            LIVE
+          </span>
+        </div>
+        
+        {/* Institutional Accumulation Feed - Material Events (>$50M) */}
+        <InstitutionalFeedPanel 
+          institutionalFeed={institutionalFeed.length > 0 ? institutionalFeed : prevInstitutionalFeedRef.current}
+        />
+      </div>
+
+      {/* 4-Panel Government Data Grid - 2x2 Layout */}
+      <div 
+        className="main-grid"
+        style={{ 
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gridTemplateRows: '1fr 1fr',
+          gap: '10px',
+          backgroundColor: '#000000',
+          height: 'calc(100vh - 60px)',
+          minHeight: 0,
+          padding: '10px',
+          width: '100%',
+          boxSizing: 'border-box'
+        }}
+      >
+          {/* Panel 1: LIQUIDITY & CP (Top Left) */}
+          <DataPanel
+            title="LIQUIDITY & CP"
+            subtitle="Commercial Paper Rates (federalreserve.gov) + Repo (newyorkfed.org)"
+            data={nyFedData.data}
+            sourceUrl={nyFedData.sourceUrl}
+            loading={nyFedData.loading}
+            error={nyFedData.error}
+            panelType="nyfed"
+          />
+
+          {/* Panel 2: TREASURY (Top Right) */}
+          <Suspense fallback={<PanelSkeleton title="TREASURY" />}>
+            <DataPanel
+              title="TREASURY"
+              subtitle="DTS Net Cash Flow & TGA Balance (fiscaldata.treasury.gov)"
+              data={treasuryData.data || prevTreasuryDataRef.current}
+              sourceUrl={treasuryData.sourceUrl}
+              loading={false}
+              error={treasuryData.error}
+              panelType="treasury"
+            />
+          </Suspense>
+
+          {/* Panel 3: WHALE RADAR (Bottom Left) */}
+          <Suspense fallback={<PanelSkeleton title="WHALE RADAR" />}>
+            <DataPanel
+              title="WHALE RADAR"
+              subtitle="SEC RSS V3 Feed - Aggressively Polling (sec.gov)"
+              data={secEdgarData.data || prevSecEdgarDataRef.current}
+              sourceUrl={secEdgarData.sourceUrl}
+              loading={false}
+              error={secEdgarData.error}
+              panelType="secedgar"
+            />
+          </Suspense>
+
+          {/* Panel 4: STRESS (Bottom Right) */}
+          <Suspense fallback={<PanelSkeleton title="STRESS" />}>
+            <DataPanel
+              title="STRESS"
+              subtitle="OFR FSI Index & 5-Category Breakdown (financialresearch.gov)"
+              data={ofrStressData.data || prevOfrStressDataRef.current}
+              sourceUrl={ofrStressData.sourceUrl}
+              loading={false}
+              error={ofrStressData.error}
+              panelType="ofr"
+            />
+          </Suspense>
+        </div>
+        
+        {/* Whale Narrative Sub-Panel - Below the 4-panel grid */}
+        <WhaleNarrativePanel 
+          whaleNarrative={whaleNarrative.length > 0 ? whaleNarrative : prevWhaleNarrativeRef.current}
+        />
+    </div>
+  );
+};
+
+// Memoized Whale Narrative Panel Component
+const WhaleNarrativePanel = React.memo(({ whaleNarrative }) => {
+  const narratives = whaleNarrative || [];
+  
+  return (
+    <div 
+      style={{
+        backgroundColor: '#0a0a0a',
+        border: '1px solid #00ff00',
+        padding: '8px',
+        marginTop: '10px',
+        marginLeft: '10px',
+        marginRight: '10px',
+        maxHeight: '150px',
+        overflowY: 'auto'
+      }}
+    >
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '6px',
+        borderBottom: '1px solid #333',
+        paddingBottom: '4px'
+      }}>
+        <h3 style={{
+          color: '#00ff00',
+          fontSize: '9px',
+          fontWeight: 'bold',
+          fontFamily: 'monospace',
+          textTransform: 'uppercase',
+          margin: 0
+        }}>
+          🐋 WHALE NARRATIVE
+        </h3>
+        <span style={{
+          color: '#00ff00',
+          fontSize: '6px',
+          fontFamily: 'monospace'
+        }}>
+          Strategic Notes
+        </span>
+      </div>
+      
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px'
+      }}>
+        {narratives.length > 0 ? (
+          narratives.map((narrative, idx) => {
+            const isHighPriority = narrative.priority === 'HIGH';
+            const bgColor = isHighPriority ? 'rgba(0, 255, 0, 0.1)' : 'rgba(128, 128, 128, 0.05)';
+            const borderColor = isHighPriority ? '#00ff00' : '#666';
+            
+            return (
+              <div
+                key={`${narrative.ticker}-${narrative.timestamp}-${idx}`}
+                style={{
+                  padding: '4px 6px',
+                  backgroundColor: bgColor,
+                  borderLeft: `2px solid ${borderColor}`,
+                  borderRadius: '2px',
+                  fontSize: '7px',
+                  fontFamily: 'monospace'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px' }}>
+                  <span style={{ 
+                    color: isHighPriority ? '#00ff00' : '#888',
+                    fontWeight: 'bold'
+                  }}>
+                    {narrative.type === 'INSIDER_BUY' ? '↗' : narrative.type === 'CONTRACT_AWARD' ? '📋' : '↘'}
+                  </span>
+                  <span style={{ color: '#00ff00', fontWeight: 'bold' }}>
+                    ${narrative.ticker}
+                  </span>
+                  <span style={{ color: '#00f2ff' }}>
+                    {narrative.value}
+                  </span>
+                  {isHighPriority && (
+                    <span style={{ 
+                      color: '#ffd700',
+                      fontSize: '6px',
+                      padding: '1px 3px',
+                      border: '1px solid #ffd700',
+                      borderRadius: '2px'
+                    }}>
+                      HIGH
+                    </span>
+                  )}
+                </div>
+                <div style={{ color: '#ccc', fontSize: '6px', marginTop: '2px' }}>
+                  {narrative.narrative} • Linked to: <span style={{ color: '#00f2ff' }}>{narrative.macroLink}</span>
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div style={{
+            color: '#666',
+            fontSize: '7px',
+            fontFamily: 'monospace',
+            fontStyle: 'italic',
+            padding: '8px',
+            textAlign: 'center'
+          }}>
+            Monitoring for material stakes (&gt;$100M transactions, &gt;$1B contracts)...
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}, (prevProps, nextProps) => {
+  // Custom comparison: only re-render if narrative data actually changed
+  if (!prevProps.whaleNarrative || !nextProps.whaleNarrative) {
+    return prevProps.whaleNarrative === nextProps.whaleNarrative;
+  }
+  if (prevProps.whaleNarrative.length !== nextProps.whaleNarrative.length) return false;
+  return prevProps.whaleNarrative.every((item, idx) => {
+    const next = nextProps.whaleNarrative[idx];
+    return next && item.ticker === next.ticker && item.timestamp === next.timestamp && item.value === next.value;
+  });
+});
+
+// Memoized Institutional Feed Panel Component
+const InstitutionalFeedPanel = React.memo(({ institutionalFeed }) => {
+  const feed = institutionalFeed || [];
+  
+  return (
+    <div style={{ 
+      display: 'flex',
+      flexDirection: 'row',
+      gap: '4px',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      fontSize: '7px',
+      maxHeight: '35px',
+      overflowY: 'auto'
+    }}>
+      {feed.length > 0 ? (
+        feed.slice(0, 5).map((event, idx) => {
+          const isBuy = event.transactionType === 'Buy';
+          const isSell = event.transactionType === 'Sell';
+          const glowColor = isBuy ? '#00ff00' : isSell ? '#dc143c' : '#888';
+          const bgColor = isBuy ? 'rgba(0, 255, 0, 0.15)' : isSell ? 'rgba(220, 20, 60, 0.15)' : 'rgba(128, 128, 128, 0.1)';
+          
+          return (
+            <div 
+              key={`${event.ticker}-${event.timestamp}-${idx}`}
+              style={{
+                padding: '2px 4px',
+                backgroundColor: bgColor,
+                borderLeft: `2px solid ${glowColor}`,
+                borderRadius: '2px',
+                flex: '0 1 auto',
+                boxShadow: `0 0 8px ${glowColor}40`,
+                cursor: 'pointer'
+              }}
+              onClick={() => event.edgarUrl !== '#' && window.open(event.edgarUrl, '_blank')}
+              title={`${event.entity} - ${event.formType} - ${event.formattedValue}`}
+            >
+              <span style={{ 
+                color: glowColor,
+                fontSize: '7px',
+                fontWeight: 'bold',
+                fontFamily: 'monospace',
+                whiteSpace: 'nowrap',
+                textShadow: `0 0 4px ${glowColor}`
+              }}>
+                {event.entity.substring(0, 15)} {isBuy ? '↗' : isSell ? '↘' : '→'} ${event.ticker} {event.formattedValue}
+              </span>
+            </div>
+          );
+        })
+      ) : (
+        <span style={{ 
+          color: '#666',
+          fontSize: '7px',
+          fontFamily: 'monospace'
+        }}>
+          Monitoring institutional accumulation...
+        </span>
+      )}
+    </div>
+  );
+}, (prevProps, nextProps) => {
+  // Custom comparison: only re-render if feed data actually changed
+  if (!prevProps.institutionalFeed || !nextProps.institutionalFeed) {
+    return prevProps.institutionalFeed === nextProps.institutionalFeed;
+  }
+  if (prevProps.institutionalFeed.length !== nextProps.institutionalFeed.length) return false;
+  return prevProps.institutionalFeed.every((item, idx) => {
+    const next = nextProps.institutionalFeed[idx];
+    return next && item.ticker === next.ticker && item.timestamp === next.timestamp && item.formattedValue === next.formattedValue;
+  });
+});
+
+// Panel Skeleton Component - Ghost UI for smooth loading
+const PanelSkeleton = React.memo(({ title }) => {
+  return (
+    <div 
+      className="panel-container"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        backgroundColor: '#000000',
+        border: '1px solid #333333',
+        borderRadius: '4px',
+        padding: '12px',
+        overflow: 'hidden'
+      }}
+    >
+      <div 
+        className="panel-header"
+        style={{
+          flexShrink: 0,
+          marginBottom: '8px',
+          paddingBottom: '8px',
+          borderBottom: '1px solid #333333'
+        }}
+      >
+        <h3 style={{
+          color: '#00ff00',
+          fontSize: '11px',
+          fontWeight: 'bold',
+          fontFamily: 'monospace',
+          textTransform: 'uppercase',
+          margin: 0
+        }}>
+          {title}
+        </h3>
+      </div>
+      <div style={{
+        flex: '1 1 auto',
+        overflowY: 'auto',
+        minHeight: 0,
+        color: '#666',
+        fontSize: '10px',
+        fontFamily: 'monospace',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ 
+            width: '40px', 
+            height: '40px', 
+            border: '2px solid #333',
+            borderTopColor: '#00ff00',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            margin: '0 auto 10px'
+          }} />
+          <style>{`
+            @keyframes spin {
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+          <div>Loading {title}...</div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+export default NetLiquidityEngine;

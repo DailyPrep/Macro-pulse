@@ -1,0 +1,133 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Roboto Mono', monospace !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #000000 !important;
+  color: #00ff00 !important;
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Global Bloomberg Terminal Aesthetic */
+* {
+  font-family: 'Roboto Mono', monospace !important;
+}
+
+/* Ensure all containers have green borders */
+.border-fluorescent-green {
+  border-color: #00ff00 !important;
+}
+
+/* Ensure all text is fluorescent green by default */
+.text-fluorescent-green {
+  color: #00ff00 !important;
+}
+
+code {
+  font-family: 'Roboto Mono', 'IBM Plex Mono', 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+  border-left: 1px solid #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00ff00;
+  border-radius: 2px;
+  border: 2px solid #0a0a0a;
+  min-height: 40px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00f2ff;
+  border: 2px solid #00ff00;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: #00ffff;
+}
+
+/* Unified Kinetic Scrolling - Macro Pulse Style for All Panels */
+.panel-container,
+.panel-content,
+.custom-scrollbar {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; /* Kinetic scrolling on iOS */
+  scroll-behavior: smooth;
+}
+
+/* Thin Scroll Track - Unified Style */
+.panel-container::-webkit-scrollbar,
+.panel-content::-webkit-scrollbar,
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.panel-container::-webkit-scrollbar-track,
+.panel-content::-webkit-scrollbar-track,
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #000000;
+  border-left: 1px solid #1a1a1a;
+}
+
+.panel-container::-webkit-scrollbar-thumb,
+.panel-content::-webkit-scrollbar-thumb,
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #00ff00;
+  border-radius: 3px;
+  border: 1px solid #000000;
+  min-height: 20px;
+}
+
+.panel-container::-webkit-scrollbar-thumb:hover,
+.panel-content::-webkit-scrollbar-thumb:hover,
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #00f2ff;
+  border: 1px solid #00ff00;
+}
+
+.panel-container::-webkit-scrollbar-thumb:active,
+.panel-content::-webkit-scrollbar-thumb:active,
+.custom-scrollbar::-webkit-scrollbar-thumb:active {
+  background: #00ffff;
+}
+
+/* Firefox - Thin Scrollbar */
+.panel-container,
+.panel-content,
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #00ff00 #000000;
+}
+
+/* Consistent Header Docking */
+.panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #000000;
+  border-bottom: 1px solid #1a1a1a;
+}
+
